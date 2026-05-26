@@ -59,7 +59,9 @@ _KEYWORDS = {
     "job", "role", "promotion", "tenure", "satisfaction", "performance",
     "overtime", "training", "workforce", "hire", "hired", "turnover",
     "education", "experience", "years", "monthly", "average", "total",
-    "count", "how many", "oldest", "youngest", "highest", "lowest",
+    "count", "how", "many", "oldest", "youngest", "highest", "lowest",
+    "holidays", "holiday", "leave", "days", "paid", "finance", "marketing",
+    "legal", "operations", "technology", "support", "department", "team",
 }
 
 
