@@ -154,7 +154,10 @@ def build_system_prompt(memory_manager: MemoryManager, rag_context: str = "") ->
         "- Be conversational and warm; use the user's name when you know it.\n"
         "- Give accurate, well-structured answers with markdown when helpful.\n"
         "- Be honest about uncertainty — never fabricate facts.\n"
-        "- When asked about past conversations, refer to the chat history."
+        "- When asked about past conversations, refer to the chat history.\n"
+        "- For employee/HR questions: ALWAYS give a direct plain-English answer with "
+        "the actual numbers. NEVER output code snippets, function calls, or Python examples. "
+        "Just answer directly: e.g. 'The highest paid department is X with an average salary of $Y.'"
     )
     if rag_context:
         base += (

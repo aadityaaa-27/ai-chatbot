@@ -62,6 +62,8 @@ _KEYWORDS = {
     "count", "how", "many", "oldest", "youngest", "highest", "lowest",
     "holidays", "holiday", "leave", "days", "paid", "finance", "marketing",
     "legal", "operations", "technology", "support", "department", "team",
+    "dept", "sal", "salary", "highest", "lowest", "top", "bottom", "best", "worst",
+    "which", "what", "show", "list", "give", "tell", "find",
 }
 
 
