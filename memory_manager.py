@@ -85,7 +85,7 @@ class MemoryManager:
         for msg in raw:
             role = "user" if msg["role"] == "user" else "model"
             if role == expected:
-                result.append({"role": role, "parts": [msg["content"]]})
+                result.append({"role": role, "parts": [{"text": msg["content"]}]})
                 expected = "model" if expected == "user" else "user"
         return result
 

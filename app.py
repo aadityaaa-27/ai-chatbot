@@ -3,9 +3,9 @@ import os
 import re
 from datetime import datetime
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import streamlit as st
-import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from memory_manager import MemoryManager
@@ -36,15 +36,6 @@ html, body, .stApp { background: #0d0d0d !important; }
 
 /* Remove column gap */
 [data-testid="stHorizontalBlock"] { gap: 0 !important; }
-
-/* ── Left panel (fixed via JS below) ── */
-#left-panel-inner {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: 1rem 0.85rem;
-    box-sizing: border-box;
-}
 
 /* Session history cards */
 .scard {
@@ -144,32 +135,6 @@ hr { border-color: #1e1e1e !important; margin: 0.4rem 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── JS: fix left column + compact chat input ─────────────────────────────────
-components.html("""
-<script>
-(function init() {
-    var doc = window.parent.document;
-
-    /* ── 1. Fix left column position ── */
-    function fixLayout() {
-        var blocks = doc.querySelectorAll('[data-testid="stHorizontalBlock"]');
-        if (!blocks.length) { setTimeout(fixLayout, 80); return; }
-        var left  = blocks[0].querySelector(':scope > div:first-child');
-        var right = blocks[0].querySelector(':scope > div:last-child');
-        if (!left || !right) { setTimeout(fixLayout, 80); return; }
-        left.style.cssText = [
-            'position:fixed','top:0','left:0','height:100vh','width:24vw',
-            'background:#111','border-right:1px solid #1e1e1e',
-            'overflow-y:auto','z-index:200','box-sizing:border-box'
-        ].join(';');
-        right.style.cssText = 'margin-left:24vw;width:76vw;max-width:76vw';
-    }
-    fixLayout();
-
-})();
-</script>
-""", height=0)
-
 
 # ── Gemini helpers ────────────────────────────────────────────────────────────
 
@@ -191,34 +156,33 @@ def build_system_prompt(memory_manager: MemoryManager, rag_context: str = "") ->
     return base
 
 
-def make_model(system_prompt: str) -> genai.GenerativeModel:
-    genai.configure(api_key=GEMINI_API_KEY)
-    return genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
-        system_instruction=system_prompt,
-        generation_config=genai.GenerationConfig(
-            temperature=0.85, top_p=0.95, max_output_tokens=8192,
-        ),
-    )
+def _make_client() -> genai.Client:
+    return genai.Client(api_key=GEMINI_API_KEY)
 
 
-def generate_title(model: genai.GenerativeModel, first_msg: str) -> str:
+def generate_title(client: genai.Client, first_msg: str) -> str:
     try:
-        r = model.generate_content(
-            f'Give a 3-5 word title for a chat that starts with: "{first_msg[:200]}"\n'
-            'Reply with ONLY the title. No quotes, no punctuation at the end.'
+        r = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=(
+                f'Give a 3-5 word title for a chat that starts with: "{first_msg[:200]}"\n'
+                'Reply with ONLY the title. No quotes, no punctuation at the end.'
+            ),
         )
         return r.text.strip()[:55]
     except Exception:
         return first_msg[:45]
 
 
-def ai_extract_facts(model: genai.GenerativeModel, msg: str) -> dict:
+def ai_extract_facts(client: genai.Client, msg: str) -> dict:
     try:
-        r = model.generate_content(
-            f'Extract personal facts explicitly stated in: "{msg}"\n'
-            'Return ONLY a flat JSON object (name, age, location, occupation, etc.).'
-            ' If none, return {}.'
+        r = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=(
+                f'Extract personal facts explicitly stated in: "{msg}"\n'
+                'Return ONLY a flat JSON object (name, age, location, occupation, etc.).'
+                ' If none, return {}.'
+            ),
         )
         text = re.sub(r"^```(?:json)?\s*", "", r.text.strip())
         text = re.sub(r"\s*```$", "", text)
@@ -236,10 +200,23 @@ def chat(memory_manager: MemoryManager, user_input: str, session_id: str,
     # 2. RAG — semantic search over company docs (fallback / supplement)
     rag_ctx = rag.get_context(user_input) if (rag and rag.ready and not sql_ctx) else ""
     combined = "\n\n".join(filter(None, [sql_ctx, rag_ctx]))
-    prompt  = build_system_prompt(memory_manager, combined)
-    model   = make_model(prompt)
-    hist    = memory_manager.get_history_for_gemini(session_id=session_id)
-    return model.start_chat(history=hist).send_message(user_input).text, model
+    system_prompt = build_system_prompt(memory_manager, combined)
+    hist = memory_manager.get_history_for_gemini(session_id=session_id)
+
+    client = _make_client()
+    cfg = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        temperature=0.85,
+        top_p=0.95,
+        max_output_tokens=8192,
+    )
+    chat_session = client.chats.create(
+        model="gemini-2.0-flash",
+        config=cfg,
+        history=hist,
+    )
+    response = chat_session.send_message(user_input)
+    return response.text, client
 
 
 # ── Left panel ────────────────────────────────────────────────────────────────
@@ -419,7 +396,7 @@ def main():
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
                 try:
-                    response_text, model = chat(
+                    response_text, client = chat(
                         mm, user_input, sid,
                         rag=st.session_state.rag,
                         sql=st.session_state.sql,
@@ -432,14 +409,14 @@ def main():
 
                     # Generate session title from first message
                     if not st.session_state.title_generated:
-                        title = generate_title(model, user_input)
+                        title = generate_title(client, user_input)
                         mm.set_session_title(sid, title)
                         st.session_state.title_generated = True
 
                     # AI fact extraction (non-blocking)
                     if not pf:
                         try:
-                            af = ai_extract_facts(model, user_input)
+                            af = ai_extract_facts(client, user_input)
                             if af:
                                 mm.update_facts(af)
                         except Exception:

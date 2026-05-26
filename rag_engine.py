@@ -5,7 +5,7 @@ Searches company data and returns relevant context for the chatbot.
 import os
 from typing import List, Dict
 
-import google.generativeai as genai
+from google import genai
 
 
 def _secret(key: str) -> str:
@@ -21,20 +21,21 @@ def _secret(key: str) -> str:
 
 
 class RAGEngine:
-    EMBED_MODEL = "models/text-embedding-004"
+    EMBED_MODEL = "text-embedding-004"
 
     def __init__(self):
-        self._sb    = None
-        self._ready = False
+        self._sb     = None
+        self._client = None
+        self._ready  = False
         url = _secret("SUPABASE_URL")
         key = _secret("SUPABASE_KEY")
         if not url or not key:
             return
         try:
             from supabase import create_client
-            self._sb = create_client(url, key)
-            genai.configure(api_key=_secret("GEMINI_API_KEY"))
-            self._ready = True
+            self._sb     = create_client(url, key)
+            self._client = genai.Client(api_key=_secret("GEMINI_API_KEY"))
+            self._ready  = True
         except Exception as e:
             print(f"[RAG] init failed: {e}")
 
@@ -45,11 +46,11 @@ class RAGEngine:
     # ── Embedding ─────────────────────────────────────────────────────────────
 
     def embed(self, text: str) -> List[float]:
-        result = genai.embed_content(
+        result = self._client.models.embed_content(
             model=self.EMBED_MODEL,
-            content=text[:8000],
+            contents=text[:8000],
         )
-        return result["embedding"]
+        return result.embeddings[0].values
 
     # ── Search ────────────────────────────────────────────────────────────────
 

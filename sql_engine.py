@@ -5,7 +5,7 @@ Converts natural language → PostgreSQL → executes on Supabase → returns re
 import json
 import re
 
-import google.generativeai as genai
+from google import genai
 
 from rag_engine import _secret
 
@@ -65,17 +65,18 @@ def is_employee_question(text: str) -> bool:
 
 class SQLEngine:
     def __init__(self):
-        self._sb    = None
-        self._ready = False
+        self._sb     = None
+        self._client = None
+        self._ready  = False
         url = _secret("SUPABASE_URL")
         key = _secret("SUPABASE_KEY")
         if not url or not key:
             return
         try:
             from supabase import create_client
-            self._sb = create_client(url, key)
-            genai.configure(api_key=_secret("GEMINI_API_KEY"))
-            self._ready = True
+            self._sb     = create_client(url, key)
+            self._client = genai.Client(api_key=_secret("GEMINI_API_KEY"))
+            self._ready  = True
         except Exception as e:
             print(f"[SQL] init failed: {e}")
 
@@ -101,11 +102,13 @@ Rules:
 - LIMIT 20 for list-type results
 - Return ONLY the raw SQL — no markdown, no explanation
 """
-        model  = genai.GenerativeModel("gemini-2.0-flash")
-        raw    = model.generate_content(prompt).text.strip()
+        raw = self._client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+        ).text.strip()
         # Strip markdown fences if Gemini added them
-        raw    = re.sub(r"^```sql\s*", "", raw, flags=re.IGNORECASE)
-        raw    = re.sub(r"\s*```$", "", raw)
+        raw = re.sub(r"^```sql\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
         return raw.strip()
 
     # ── Execute on Supabase ───────────────────────────────────────────────────
