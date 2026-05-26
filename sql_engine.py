@@ -11,24 +11,29 @@ from rag_engine import _secret
 
 # ── Schema description fed to Gemini ─────────────────────────────────────────
 SCHEMA = """
-PostgreSQL table: employees  (1,470 IBM HR employee records)
+PostgreSQL table: employees  (~2,940 employee records across 9 departments)
 
 Columns:
   age                        INTEGER   employee age in years
   attrition                  TEXT      'Yes' or 'No' (left company?)
   business_travel            TEXT      'Non-Travel' | 'Travel_Rarely' | 'Travel_Frequently'
   daily_rate                 INTEGER
-  department                 TEXT      'Sales' | 'Research & Development' | 'Human Resources'
+  department                 TEXT      'Sales' | 'Research & Development' | 'Human Resources' |
+                                       'Finance' | 'Marketing' | 'Information Technology' |
+                                       'Operations' | 'Legal' | 'Customer Support'
   distance_from_home         INTEGER   miles
   education                  INTEGER   1=Below College 2=College 3=Bachelor 4=Master 5=Doctor
   education_field            TEXT      'Life Sciences' | 'Medical' | 'Marketing' | 'Technical Degree' | 'Human Resources' | 'Other'
   employee_number            INTEGER
   environment_satisfaction   INTEGER   1=Low 2=Medium 3=High 4=Very High
   gender                     TEXT      'Male' | 'Female'
+  holidays                   INTEGER   paid holidays per year (all employees: 20)
   hourly_rate                INTEGER
   job_involvement            INTEGER   1=Low 2=Medium 3=High 4=Very High
   job_level                  INTEGER   1-5
-  job_role                   TEXT      e.g. 'Sales Executive' | 'Research Scientist' | 'Manager' | 'Manufacturing Director' | etc.
+  job_role                   TEXT      e.g. 'Sales Executive' | 'Research Scientist' | 'Manager' |
+                                       'Financial Analyst' | 'Software Engineer' | 'Marketing Manager' |
+                                       'Operations Manager' | 'Legal Counsel' | 'Customer Service Representative' | etc.
   job_satisfaction           INTEGER   1=Low 2=Medium 3=High 4=Very High
   marital_status             TEXT      'Single' | 'Married' | 'Divorced'
   monthly_income             INTEGER   in USD
