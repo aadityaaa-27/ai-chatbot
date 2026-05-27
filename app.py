@@ -392,6 +392,9 @@ def _chart_ai(chart_key: str, chart_title: str, rows: list,
                     "rows": dyn_rows,
                     "question": question,
                 }
+                # Must rerun so _render_chart() picks up the new override
+                # (setting session_state alone doesn't trigger a second render)
+                st.rerun()
 
     if ans_key in st.session_state:
         st.markdown(
