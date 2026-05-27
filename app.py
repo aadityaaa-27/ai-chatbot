@@ -202,9 +202,8 @@ def ask_about_chart(chart_title: str, rows: list, question: str,
         "- Highlight patterns, outliers, or actionable insights where relevant.\n"
         "- No markdown headers, no code snippets — plain English, 1–3 sentences."
     )
-    r = _make_client().models.generate_content(
-        model="gemini-2.0-flash", contents=prompt
-    )
+    client = _make_client()          # keep reference alive for the full request
+    r = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
     return r.text.strip()
 
 
