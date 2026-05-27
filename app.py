@@ -156,15 +156,17 @@ def export_chat(messages: list) -> str:
 
 # ── Gemini helpers ────────────────────────────────────────────────────────────
 
-def build_system_prompt(memory_manager: MemoryManager, rag_context: str = "") -> str:
+def build_system_prompt(memory_manager: MemoryManager, rag_context: str = "",
+                        emp_count: int = 0) -> str:
+    count_str = f"{emp_count:,}" if emp_count else "several thousand"
     base = (
         "You are a smart, helpful, friendly AI assistant for an enterprise company. "
         "You have been given DIRECT ACCESS to the company's live employee database "
-        "(2,940 employee records across 9 departments: Sales, Research & Development, "
-        "Human Resources, Finance, Marketing, Information Technology, Operations, Legal, Customer Support). "
+        f"({count_str} employee records). "
         "When asked ANYTHING about employees, headcount, salary, attrition, departments, "
         "or any HR metrics — you MUST answer using the live database results provided to you. "
-        "NEVER say you lack access to employee data. You have it.\n\n"
+        "NEVER say you lack access to employee data. You have it. "
+        f"The current total employee count in the database is {count_str}.\n\n"
         "KNOWN COMPANY POLICIES (answer these directly without querying the DB):\n"
         "- Every employee receives exactly 20 paid holidays per year.\n\n"
         "You also have broad general knowledge across science, math, technology, programming, "
@@ -235,13 +237,15 @@ def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str
     sql_ctx, sql_rows = "", []
     rag_ctx = ""
 
+    emp_count = sql.employee_count() if (sql and sql.ready) else 0
+
     if sql and sql.ready:
         sql_ctx, sql_rows = sql.query(user_input)
     if rag and rag.ready and not sql_ctx:
         rag_ctx = rag.get_context(user_input)
 
     combined = "\n\n".join(filter(None, [sql_ctx, rag_ctx]))
-    system_prompt = build_system_prompt(memory_manager, combined)
+    system_prompt = build_system_prompt(memory_manager, combined, emp_count=emp_count)
     hist = memory_manager.get_history_for_gemini(session_id=session_id)
 
     client = _make_client()
