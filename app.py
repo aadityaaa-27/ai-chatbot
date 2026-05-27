@@ -250,21 +250,41 @@ def _find_chart_data(question: str, all_analytics: dict,
     """
     Return the best list-of-dicts to use as a chart override.
     Strategy:
-      1. Match question keywords against _CHART_KEYWORD_MAP → pre-built table
-      2. Fall back to sql.answer() dynamic SQL if no match
-      3. Return [] if nothing chartable is found
+      1. Match question keywords → pre-built table already in all_analytics
+      2. Cache miss? Refresh full analytics from DB once, then retry
+      3. Still no match? Try sql.answer() dynamic SQL
+      4. Return [] if nothing chartable found
     """
     q = question.lower()
+    _cache_refreshed = False
 
-    # ── 1. Keyword match → pre-built table ────────────────────────────────────
+    def _try_key(key: str) -> list:
+        rows = all_analytics.get(key, [])
+        if rows and len(rows) >= 2 and make_chart(rows) is not None:
+            return rows
+        return []
+
+    # ── 1. Keyword match → pre-built table ───────────────────────────────────
     for keywords, key in _CHART_KEYWORD_MAP:
         if all(kw in q for kw in keywords):
-            rows = all_analytics.get(key, [])
-            if rows and len(rows) >= 2:
-                if make_chart(rows) is not None:
-                    return rows
+            rows = _try_key(key)
+            if rows:
+                return rows
 
-    # ── 2. Dynamic SQL fallback ────────────────────────────────────────────────
+            # ── 2. Cache miss — refresh analytics once and retry ──────────────
+            if not _cache_refreshed and sql and sql.ready:
+                try:
+                    fresh = sql.get_analytics_data(source_file=source_file)
+                    st.session_state["analytics_data"] = fresh
+                    all_analytics.update(fresh)      # mutate in-place so caller sees it
+                    _cache_refreshed = True
+                    rows = _try_key(key)
+                    if rows:
+                        return rows
+                except Exception:
+                    pass
+
+    # ── 3. Dynamic SQL fallback for unrecognised questions ────────────────────
     if sql and sql.ready:
         try:
             result = sql.answer(question, source_file=source_file)
@@ -350,8 +370,8 @@ def _render_chart(chart_key: str, fig, rows: list, chart_title: str,
 
         if st.button("↩ Reset to original chart", key=f"reset_{chart_key}",
                      use_container_width=True):
-            st.session_state.pop(override_key, None)
-            st.session_state.pop(f"ca_{chart_key}", None)
+            for _k in [override_key, f"ca_{chart_key}", f"ch_{chart_key}"]:
+                st.session_state.pop(_k, None)
             st.rerun()
     else:
         st.plotly_chart(fig, use_container_width=True)
@@ -361,11 +381,15 @@ def _render_chart(chart_key: str, fig, rows: list, chart_title: str,
 
 def _chart_ai(chart_key: str, chart_title: str, rows: list,
               source_file: str = "", sql: SQLEngine = None):
-    """Render the mini-chat widget below a chart.
-    On submit:  (a) generates a text answer using all analytics data,
-                (b) tries to run a DB query and replace the chart if chartable."""
-    ans_key = f"ca_{chart_key}"
+    """
+    Mini-chat widget with full conversation history.
+    Each question appends to a per-chart history (capped at 5) so the user
+    can drill down across 4-5 follow-up questions without losing context.
+    Each question also attempts to update the chart above via _find_chart_data().
+    """
+    hist_key = f"ch_{chart_key}"   # list[{"q": str, "a": str}]
 
+    # ── Input form ────────────────────────────────────────────────────────────
     with st.form(key=f"cf_{chart_key}", clear_on_submit=True, border=False):
         col_q, col_b = st.columns([6, 1])
         with col_q:
@@ -381,30 +405,43 @@ def _chart_ai(chart_key: str, chart_title: str, rows: list,
         all_analytics = st.session_state.get("analytics_data", {})
         with st.spinner("Analysing…"):
             # ── Text answer ───────────────────────────────────────────────────
-            st.session_state[ans_key] = ask_about_chart(
+            answer = ask_about_chart(
                 chart_title, rows, question, source_file,
                 sql=sql, all_analytics=all_analytics,
             )
-            # ── Chart override: keyword-matched pre-built OR dynamic SQL ──────
+            # Append to per-chart history (keep last 5 turns)
+            hist = st.session_state.get(hist_key, [])
+            hist = (hist + [{"q": question, "a": answer}])[-5:]
+            st.session_state[hist_key] = hist
+
+            # ── Chart override: keyword map first, then SQL fallback ──────────
             dyn_rows = _find_chart_data(question, all_analytics, sql, source_file)
             if dyn_rows:
                 st.session_state[f"chart_override_{chart_key}"] = {
                     "rows": dyn_rows,
                     "question": question,
                 }
-                # Must rerun so _render_chart() picks up the new override
-                # (setting session_state alone doesn't trigger a second render)
-                st.rerun()
+                st.rerun()   # triggers _render_chart() to swap the chart
 
-    if ans_key in st.session_state:
+    # ── Conversation history display ──────────────────────────────────────────
+    hist = st.session_state.get(hist_key, [])
+    if hist:
+        # Latest answer — expanded green bubble
+        latest = hist[-1]
         st.markdown(
-            f'<div class="chart-ai-ans">🤖 {st.session_state[ans_key]}</div>',
+            f'<div class="chart-ai-ans">🤖 {latest["a"]}</div>',
             unsafe_allow_html=True,
         )
-        if st.button("✕ clear", key=f"clr_{chart_key}",
+        # Previous answers — collapsed expanders
+        for item in reversed(hist[:-1]):
+            label = item["q"][:48] + ("…" if len(item["q"]) > 48 else "")
+            with st.expander(f"Q: {label}"):
+                st.markdown(item["a"])
+
+        if st.button("✕ clear all", key=f"clr_{chart_key}",
                      type="secondary", use_container_width=False):
-            st.session_state.pop(ans_key, None)
-            st.session_state.pop(f"chart_override_{chart_key}", None)
+            for _k in [hist_key, f"ca_{chart_key}", f"chart_override_{chart_key}"]:
+                st.session_state.pop(_k, None)
             st.rerun()
 
 
