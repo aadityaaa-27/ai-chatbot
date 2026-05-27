@@ -66,6 +66,13 @@ html, body, .stApp { background: #0d0d0d !important; }
     border-radius: 8px; padding: 10px 12px; font-size: 0.78rem; color: #f5c518;
 }
 
+/* Dataset source badge on AI messages */
+.ds-badge {
+    display: inline-block; background: #1a2a1a; border: 1px solid #2a3d2a;
+    color: #4ade80; border-radius: 6px; font-size: 0.68rem;
+    padding: 2px 8px; margin-top: 6px;
+}
+
 hr { border-color: #1a1a1a !important; margin: 0.5rem 0 !important; }
 
 /* Form input */
@@ -823,6 +830,14 @@ def main():
             for msg in messages:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
+                    # Dataset source badge on assistant messages
+                    if msg["role"] == "assistant":
+                        sf_label = msg.get("source_file", "")
+                        badge = sf_label if sf_label else "All datasets"
+                        st.markdown(
+                            f'<div class="ds-badge">📂 {badge}</div>',
+                            unsafe_allow_html=True,
+                        )
                     # Show chart if this message has SQL data
                     chart_data = msg.get("chart_data", [])
                     if chart_data and len(chart_data) > 1:
@@ -889,6 +904,12 @@ def main():
                             source_file=active_sf,
                         )
                         st.markdown(response_text)
+                        # Dataset badge — shown immediately on new response
+                        badge = active_sf if active_sf else "All datasets"
+                        st.markdown(
+                            f'<div class="ds-badge">📂 {badge}</div>',
+                            unsafe_allow_html=True,
+                        )
 
                         # Auto-chart if SQL returned chartable data
                         if sql_rows and len(sql_rows) > 1:
@@ -898,9 +919,10 @@ def main():
 
                         mm.add_message("assistant", response_text, session_id=sid)
                         st.session_state.messages.append({
-                            "role":       "assistant",
-                            "content":    response_text,
-                            "chart_data": sql_rows,
+                            "role":        "assistant",
+                            "content":     response_text,
+                            "chart_data":  sql_rows,
+                            "source_file": active_sf,   # which dataset answered this
                         })
 
                         # Generate session title on first message

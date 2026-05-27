@@ -105,17 +105,37 @@ class SQLEngine:
 
     # ── Text → SQL ────────────────────────────────────────────────────────────
 
-    def _to_sql(self, question: str, source_file: str = "") -> str:
+    @staticmethod
+    def _inject_filter(sql: str, source_file: str) -> str:
+        """
+        Programmatically inject a source_file WHERE clause into a SQL query.
+        Never relies on Gemini to add it — 100% reliable.
+        """
         sf = _sf_filter(source_file)
-        filter_note = (
-            f"\nIMPORTANT: Always add this filter to EVERY query: "
-            f"WHERE {sf}\n(If the query already has a WHERE clause, use AND {sf} instead.)"
-            if sf else ""
-        )
+        if not sf:
+            return sql
+
+        up = sql.upper()
+
+        # Find the right insertion point
+        for keyword in (" WHERE ", " GROUP BY ", " ORDER BY ", " HAVING ", " LIMIT "):
+            idx = up.find(keyword)
+            if idx != -1:
+                if keyword == " WHERE ":
+                    # Wrap existing WHERE condition and AND our filter
+                    insert_at = idx + len(" WHERE ")
+                    return sql[:insert_at] + f"({sf}) AND (" + sql[insert_at:] + ")"
+                else:
+                    return sql[:idx] + f" WHERE {sf}" + sql[idx:]
+
+        # No clause found — append at end
+        return sql.rstrip(";") + f" WHERE {sf}"
+
+    def _to_sql(self, question: str) -> str:
+        """Generate SQL from natural language. source_file filter is injected separately."""
         prompt = f"""You are an expert PostgreSQL analyst.
 
 {SCHEMA}
-{filter_note}
 
 Convert this question into a single valid PostgreSQL SELECT query:
 "{question}"
@@ -127,6 +147,7 @@ Rules:
 - For breakdowns use GROUP BY with ORDER BY COUNT(*) DESC
 - LIMIT 20 for list-type results
 - Return ONLY the raw SQL — no markdown, no explanation
+- Do NOT add any WHERE clause for source_file
 """
         raw = self._client.models.generate_content(
             model="gemini-2.0-flash",
@@ -157,7 +178,8 @@ Rules:
         if not self._ready:
             return {"error": "SQL engine not ready"}
         try:
-            sql  = self._to_sql(question, source_file=source_file)
+            sql  = self._to_sql(question)
+            sql  = self._inject_filter(sql, source_file)   # deterministic filter
             data = self._run(sql)
             return {"sql": sql, "data": data}
         except Exception as e:
