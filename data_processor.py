@@ -107,17 +107,20 @@ Your task:
    - "Sex", "M/F" → gender
    - "Yrs Experience", "Total Exp", "Work Experience" → total_working_years
    - "Education Level", "Qualification", "Degree" → education
-3. If a column clearly doesn't match any standard field, mark it as null.
+3. If a column clearly doesn't match any standard field, use JSON null (not the string "null").
 4. Note any data quality issues (currency symbols, inconsistent formats, etc.)
 
-Return ONLY valid JSON (no markdown):
+Return ONLY valid JSON (no markdown, no code fences):
 {{
   "column_map": {{
-    "EXACT_UPLOADED_COLUMN_NAME": "standard_field_name_or_null"
+    "EXACT_UPLOADED_COLUMN_NAME": "standard_field_name_or_json_null"
   }},
   "extra_columns": ["columns that have no standard mapping"],
   "notes": "short description of data quality and what was found"
 }}
+
+IMPORTANT: For unmapped columns use JSON null like this: "Col Name": null
+NOT like this: "Col Name": "null"
 """
         r = self._client.models.generate_content(
             model="gemini-2.0-flash",
@@ -134,14 +137,28 @@ Return ONLY valid JSON (no markdown):
         """
         Apply column mapping, clean values, and return a ready-to-insert DataFrame.
         """
-        col_map = {k: v for k, v in mapping.get("column_map", {}).items()
-                   if v is not None}
+        # Filter out null / "null" / "none" — Gemini sometimes returns the string "null"
+        _bad = {"null", "none", "n/a", "", "undefined"}
+        col_map = {
+            k: v for k, v in mapping.get("column_map", {}).items()
+            if v is not None and str(v).strip().lower() not in _bad
+        }
 
-        # Rename uploaded columns → standard names
-        df = df.rename(columns=col_map)
+        # If two uploaded columns map to the same standard field, keep only the first
+        seen_targets: dict = {}
+        deduped: dict = {}
+        for src, tgt in col_map.items():
+            if tgt not in seen_targets:
+                seen_targets[tgt] = src
+                deduped[src] = tgt
+        col_map = deduped
 
-        # Keep only standard columns that exist in the df
-        keep = [v for v in col_map.values() if v in df.columns]
+        # Only rename columns that actually exist in the uploaded DataFrame
+        rename_map = {k: v for k, v in col_map.items() if k in df.columns}
+        df = df.rename(columns=rename_map)
+
+        # Keep only mapped standard columns (deduplicated, preserving order)
+        keep = list(dict.fromkeys(v for v in rename_map.values() if v in df.columns))
         df   = df[keep].copy()
 
         # ── Clean each column ─────────────────────────────────────────────────
