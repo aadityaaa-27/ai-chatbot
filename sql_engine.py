@@ -166,6 +166,79 @@ Rules:
             f"{table}"
         )
 
+    def query(self, question: str) -> tuple:
+        """Return (context_string, raw_rows) — raw_rows usable for charting."""
+        if not self._ready or not is_employee_question(question):
+            return "", []
+        result = self.answer(question)
+        if result.get("error") or not result.get("data"):
+            return "", []
+        rows = result["data"]
+        sql  = result["sql"]
+        if not rows:
+            return "", []
+        headers = list(rows[0].keys())
+        lines   = [" | ".join(headers)]
+        lines  += [" | ".join(str(r.get(h, "")) for h in headers) for r in rows[:20]]
+        table   = "\n".join(lines)
+        ctx = (
+            f"LIVE EMPLOYEE DATABASE RESULTS (answer based on this):\n"
+            f"Query: {sql}\n\n{table}"
+        )
+        return ctx, rows
+
+    def get_analytics_data(self) -> dict:
+        """Pre-built analytics queries for the dashboard tab."""
+        if not self._ready:
+            return {}
+        queries = {
+            "dept_headcount": (
+                "SELECT department, COUNT(*) as employees "
+                "FROM employees GROUP BY department ORDER BY employees DESC"
+            ),
+            "dept_attrition": (
+                "SELECT department, "
+                "ROUND(100.0*SUM(CASE WHEN attrition='Yes' THEN 1 ELSE 0 END)/COUNT(*)::numeric,1) as attrition_pct "
+                "FROM employees GROUP BY department ORDER BY attrition_pct DESC"
+            ),
+            "dept_salary": (
+                "SELECT department, ROUND(AVG(monthly_income)::numeric,0) as avg_salary "
+                "FROM employees GROUP BY department ORDER BY avg_salary DESC"
+            ),
+            "age_groups": (
+                "SELECT CASE "
+                "WHEN age < 25 THEN 'Under 25' "
+                "WHEN age BETWEEN 25 AND 34 THEN '25-34' "
+                "WHEN age BETWEEN 35 AND 44 THEN '35-44' "
+                "WHEN age BETWEEN 45 AND 54 THEN '45-54' "
+                "ELSE '55+' END as age_group, COUNT(*) as employees "
+                "FROM employees GROUP BY age_group ORDER BY MIN(age)"
+            ),
+            "gender": (
+                "SELECT gender, COUNT(*) as employees "
+                "FROM employees GROUP BY gender"
+            ),
+            "satisfaction": (
+                "SELECT job_satisfaction, COUNT(*) as employees "
+                "FROM employees GROUP BY job_satisfaction ORDER BY job_satisfaction"
+            ),
+            "overtime": (
+                "SELECT overtime, COUNT(*) as employees "
+                "FROM employees GROUP BY overtime"
+            ),
+            "education": (
+                "SELECT education, COUNT(*) as employees "
+                "FROM employees GROUP BY education ORDER BY education"
+            ),
+        }
+        results = {}
+        for key, sql in queries.items():
+            try:
+                results[key] = self._run(sql)
+            except Exception as e:
+                print(f"[Analytics] {key} failed: {e}")
+        return results
+
     def employee_count(self) -> int:
         if not self._ready:
             return 0
