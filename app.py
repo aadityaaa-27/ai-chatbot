@@ -266,18 +266,36 @@ def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str
 
 # ── Left panel ────────────────────────────────────────────────────────────────
 
+def _save_db_config(url: str, key: str):
+    """Persist chosen DB credentials to data/db_config.json."""
+    import json, pathlib
+    pathlib.Path("data").mkdir(exist_ok=True)
+    pathlib.Path("data/db_config.json").write_text(
+        json.dumps({"SUPABASE_URL": url, "SUPABASE_KEY": key}, indent=2)
+    )
+
+
+def _load_db_config() -> dict:
+    import json, pathlib
+    p = pathlib.Path("data/db_config.json")
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return {}
+
+
 def render_left(mm: MemoryManager):
     st.markdown("### 🤖 AI Chatbot")
     sql: SQLEngine = st.session_state.get("sql")
     rag: RAGEngine = st.session_state.get("rag")
-    emp_n = sql.employee_count() if (sql and sql.ready) else 0
-    rag_n = rag.record_count()   if (rag and rag.ready) else 0
-    if emp_n:
-        st.caption(f"Gemini 2.0 Flash · 🟢 {emp_n:,} Employees · Memory")
-    elif rag_n:
-        st.caption(f"Gemini 2.0 Flash · 🟢 Company DB ({rag_n:,}) · Memory")
+
+    # Status caption — no employee count
+    if sql and sql.ready:
+        st.caption("Gemini 2.0 Flash · 🟢 Database connected · Memory")
     else:
-        st.caption("Gemini 2.0 Flash · Memory enabled")
+        st.caption("Gemini 2.0 Flash · 🔴 No database · Memory")
 
     if st.button("✏️  New Chat", type="primary", use_container_width=True):
         st.session_state.messages        = []
@@ -347,6 +365,64 @@ def render_left(mm: MemoryManager):
         )
     else:
         st.caption("Tell me your name, job, location…")
+
+    st.divider()
+
+    # ── Database settings ─────────────────────────────────────────────────────
+    st.markdown('<div class="sec">🗄️ Database</div>', unsafe_allow_html=True)
+
+    sql: SQLEngine = st.session_state.get("sql")
+    cfg = _load_db_config()
+    current_url = cfg.get("SUPABASE_URL") or _secret("SUPABASE_URL") or ""
+
+    # Show current connection
+    if sql and sql.ready:
+        short_url = current_url.replace("https://", "")[:28] + "…" if current_url else "connected"
+        st.success(f"🟢 {short_url}", icon=None)
+    else:
+        st.warning("🔴 Not connected")
+
+    with st.expander("🔌 Change database"):
+        new_url = st.text_input(
+            "Supabase URL",
+            value=current_url,
+            placeholder="https://xxxx.supabase.co",
+            type="default",
+            key="db_url_input",
+        )
+        new_key = st.text_input(
+            "Supabase Anon Key",
+            value=cfg.get("SUPABASE_KEY", ""),
+            placeholder="eyJhbGciOiJIUzI1NiIs...",
+            type="password",
+            key="db_key_input",
+        )
+        if st.button("✅ Connect", use_container_width=True, key="db_connect_btn"):
+            if not new_url or not new_key:
+                st.error("Both URL and Key are required.")
+            else:
+                with st.spinner("Connecting…"):
+                    ok = sql.reconnect(new_url.strip(), new_key.strip()) if sql else False
+                    if not ok:
+                        # Create a fresh SQLEngine with the new creds
+                        from supabase import create_client
+                        try:
+                            from sql_engine import SQLEngine as _SE
+                            new_sql = _SE.__new__(_SE)
+                            new_sql._sb     = create_client(new_url.strip(), new_key.strip())
+                            new_sql._client = genai.Client(api_key=_secret("GEMINI_API_KEY"))
+                            new_sql._ready  = True
+                            st.session_state.sql = new_sql
+                            ok = True
+                        except Exception as e:
+                            st.error(f"Connection failed: {e}")
+
+                    if ok:
+                        _save_db_config(new_url.strip(), new_key.strip())
+                        # Clear analytics cache so charts reload from new DB
+                        st.session_state.pop("analytics_data", None)
+                        st.success("✅ Connected & saved!")
+                        st.rerun()
 
     st.divider()
 

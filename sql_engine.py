@@ -93,6 +93,19 @@ class SQLEngine:
     def ready(self) -> bool:
         return self._ready
 
+    def reconnect(self, url: str, key: str) -> bool:
+        """Re-initialise with new Supabase credentials. Returns True on success."""
+        try:
+            from supabase import create_client
+            self._sb     = create_client(url, key)
+            self._client = genai.Client(api_key=_secret("GEMINI_API_KEY"))
+            self._ready  = True
+            return True
+        except Exception as e:
+            print(f"[SQL] reconnect failed: {e}")
+            self._ready = False
+            return False
+
     # ── Text → SQL ────────────────────────────────────────────────────────────
 
     def _to_sql(self, question: str) -> str:

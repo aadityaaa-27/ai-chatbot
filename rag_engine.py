@@ -9,14 +9,34 @@ from google import genai
 
 
 def _secret(key: str) -> str:
-    """Read from .env first, fall back to st.secrets (Streamlit Cloud)."""
+    """
+    Read credentials in priority order:
+    1. data/db_config.json  (user-set via the in-app Settings panel)
+    2. Environment variables / .env
+    3. st.secrets (Streamlit Cloud / Render secrets)
+    """
+    # 1 — in-app saved config (overrides everything)
+    try:
+        import json, pathlib
+        cfg_path = pathlib.Path("data/db_config.json")
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text())
+            if cfg.get(key):
+                return cfg[key]
+    except Exception:
+        pass
+
+    # 2 — env vars / .env
     val = os.getenv(key, "")
-    if not val:
-        try:
-            import streamlit as st
-            val = str(st.secrets.get(key, ""))
-        except Exception:
-            pass
+    if val:
+        return val
+
+    # 3 — st.secrets
+    try:
+        import streamlit as st
+        val = str(st.secrets.get(key, ""))
+    except Exception:
+        pass
     return val
 
 
