@@ -194,14 +194,26 @@ def build_system_prompt(memory_manager: MemoryManager, rag_context: str = "",
         "Just answer directly: e.g. 'The highest paid department is X with an average salary of $Y.'"
     )
     if rag_context:
-        base += (
-            f"\n\n{rag_context}"
-            "\n\n⚠️ CRITICAL INSTRUCTION: The query results above are REAL DATA from this "
-            "company's own employee database that you have full authorised access to. "
-            "You MUST use these exact numbers and facts in your answer. "
-            "Do NOT say the data is private or that you cannot access it — "
-            "it has already been fetched and is shown above. Cite specific values."
-        )
+        if rag_context.startswith("DATA AVAILABILITY CHECK:"):
+            # Special case: column is all-NULL in the selected file
+            base += (
+                f"\n\n{rag_context}"
+                "\n\n⚠️ CRITICAL INSTRUCTION: The check above shows that the requested "
+                "information does NOT exist in the uploaded file. "
+                "You MUST tell the user that this specific data is not available in their file — "
+                "do NOT make up numbers, do NOT use information from any other source, "
+                "do NOT say you lack access. Just explain clearly and helpfully that "
+                "this particular column/field was not present or was empty in the uploaded dataset."
+            )
+        else:
+            base += (
+                f"\n\n{rag_context}"
+                "\n\n⚠️ CRITICAL INSTRUCTION: The query results above are REAL DATA from this "
+                "company's own employee database that you have full authorised access to. "
+                "You MUST use these exact numbers and facts in your answer. "
+                "Do NOT say the data is private or that you cannot access it — "
+                "it has already been fetched and is shown above. Cite specific values."
+            )
     ctx = memory_manager.get_memory_context()
     if ctx:
         base += f"\n\nKNOWN FACTS ABOUT THIS USER:\n{ctx}\nAddress them by name naturally."

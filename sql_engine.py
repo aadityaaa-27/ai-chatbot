@@ -60,6 +60,29 @@ _KEYWORDS = {
     "which", "what", "show", "list", "give", "tell", "find", "data", "dataset",
 }
 
+# Question keywords → schema column names (for NULL pre-checks)
+_COLUMN_HINTS: dict = {
+    "marital_status":      ["married", "single", "divorced", "marital", "marriage"],
+    "gender":              ["gender", "male", "female", "sex"],
+    "attrition":           ["attrition", "left company", "resigned", "turnover", "churned", "quit"],
+    "overtime":            ["overtime"],
+    "department":          ["department", "dept", "division"],
+    "job_role":            ["designation", "position", "job role", "job title"],
+    "education_field":     ["education field", "field of study"],
+    "education":           ["education", "degree", "qualification"],
+    "business_travel":     ["business travel", "travel frequently", "travel rarely"],
+    "monthly_income":      ["salary", "income", "ctc", "compensation", "earning", "pay"],
+    "performance_rating":  ["performance", "performer", "rating"],
+    "job_satisfaction":    ["satisfaction", "job satisfaction"],
+    "work_life_balance":   ["work life balance", "work-life"],
+    "environment_satisfaction": ["environment satisfaction", "workplace satisfaction"],
+    "total_working_years": ["total experience", "working years"],
+    "years_at_company":    ["tenure", "years at company"],
+    "num_companies_worked":["companies worked", "previous companies"],
+    "distance_from_home":  ["distance from home", "commute"],
+    "job_involvement":     ["job involvement", "involvement"],
+}
+
 
 def is_employee_question(text: str) -> bool:
     words = re.findall(r"\w+", text.lower())
@@ -185,10 +208,64 @@ Rules:
         except Exception as e:
             return {"error": str(e)}
 
+    # ── NULL column detection ─────────────────────────────────────────────────
+
+    def _detect_question_columns(self, question: str) -> list:
+        """Return schema column names that the question is likely asking about."""
+        q = question.lower()
+        found = []
+        for col, hints in _COLUMN_HINTS.items():
+            if any(hint in q for hint in hints):
+                found.append(col)
+        return found
+
+    def _null_columns(self, columns: list, source_file: str) -> list:
+        """
+        Return the subset of `columns` that have ZERO non-NULL values in the
+        selected dataset.  Silently skips any column that causes a query error.
+        """
+        sf  = _sf_filter(source_file)
+        bad = []
+        for col in columns:
+            try:
+                if sf:
+                    sql = (
+                        f"SELECT COUNT(*) AS n FROM employees "
+                        f"WHERE ({sf}) AND {col} IS NOT NULL"
+                    )
+                else:
+                    sql = f"SELECT COUNT(*) AS n FROM employees WHERE {col} IS NOT NULL"
+                rows  = self._run(sql)
+                count = int(rows[0]["n"]) if rows else 0
+                if count == 0:
+                    bad.append(col)
+            except Exception:
+                pass   # column may not exist — don't block the main query
+        return bad
+
     def query(self, question: str, source_file: str = "") -> tuple:
         """Return (context_string, raw_rows) — raw_rows usable for charting."""
         if not self._ready or not is_employee_question(question):
             return "", []
+
+        # ── Pre-check: are any relevant columns all-NULL in this dataset? ────
+        cols_in_q = self._detect_question_columns(question)
+        if cols_in_q:
+            missing = self._null_columns(cols_in_q, source_file)
+            if missing:
+                col_display = "', '".join(missing)
+                ctx = (
+                    f"DATA AVAILABILITY CHECK:\n"
+                    f"The column(s) '{col_display}' contain NO data "
+                    f"(all values are NULL / missing) in the selected dataset "
+                    f"'{source_file or 'all datasets'}'.\n\n"
+                    f"REQUIRED RESPONSE: Inform the user clearly that this "
+                    f"information is not present in the uploaded file — the "
+                    f"column was either empty or not included. "
+                    f"Do NOT provide any numbers or estimates for this field."
+                )
+                return ctx, []
+
         result = self.answer(question, source_file=source_file)
         if result.get("error") or not result.get("data"):
             return "", []
