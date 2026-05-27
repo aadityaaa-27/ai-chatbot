@@ -168,6 +168,10 @@ Rules:
 - Use COUNT(*) for totals / headcounts
 - Add clear column aliases (e.g. AS "Average Age", AS "Total Employees")
 - For breakdowns use GROUP BY with ORDER BY COUNT(*) DESC
+- CRITICAL: In GROUP BY and ORDER BY always use positional references
+  (GROUP BY 1, 2 or GROUP BY the actual column/expression) — NEVER
+  reference an alias you defined in the same SELECT clause, because
+  PostgreSQL does not allow that
 - LIMIT 20 for list-type results
 - Return ONLY the raw SQL — no markdown, no explanation
 - Do NOT add any WHERE clause for source_file

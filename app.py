@@ -251,11 +251,45 @@ def ask_about_chart(chart_title: str, chart_rows: list, question: str,
     return r.text.strip()
 
 
+def _render_chart(chart_key: str, fig, rows: list, chart_title: str,
+                  source_file: str, sql: SQLEngine = None):
+    """
+    Render a chart that can be replaced in-place by an AI-generated chart
+    when the user asks a question.  Then renders the AI chat widget below.
+    """
+    override_key = f"chart_override_{chart_key}"
+    override     = st.session_state.get(override_key)
+
+    if override:
+        try:
+            dyn_fig = make_chart(override["rows"])
+            if dyn_fig:
+                dyn_fig.update_layout(
+                    title=f"🔍 {override['question'][:60]}",
+                    **_DARK,
+                )
+                st.plotly_chart(dyn_fig, use_container_width=True)
+            else:
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            st.plotly_chart(fig, use_container_width=True)
+
+        if st.button("↩ Reset to original chart", key=f"reset_{chart_key}",
+                     use_container_width=True):
+            st.session_state.pop(override_key, None)
+            st.session_state.pop(f"ca_{chart_key}", None)
+            st.rerun()
+    else:
+        st.plotly_chart(fig, use_container_width=True)
+
+    _chart_ai(chart_key, chart_title, rows, source_file, sql)
+
+
 def _chart_ai(chart_key: str, chart_title: str, rows: list,
               source_file: str = "", sql: SQLEngine = None):
-    """Render a mini-chat widget below a chart.
-    Passes ALL pre-computed analytics to the AI so cross-chart questions
-    (e.g. 'which age group earns most?' on the salary chart) work reliably."""
+    """Render the mini-chat widget below a chart.
+    On submit:  (a) generates a text answer using all analytics data,
+                (b) tries to run a DB query and replace the chart if chartable."""
     ans_key = f"ca_{chart_key}"
 
     with st.form(key=f"cf_{chart_key}", clear_on_submit=True, border=False):
@@ -270,13 +304,26 @@ def _chart_ai(chart_key: str, chart_title: str, rows: list,
             ask = st.form_submit_button("Ask ✨", use_container_width=True)
 
     if ask and question.strip():
-        # Pull the full analytics snapshot already in session_state
         all_analytics = st.session_state.get("analytics_data", {})
         with st.spinner("Analysing…"):
+            # ── Text answer ───────────────────────────────────────────────────
             st.session_state[ans_key] = ask_about_chart(
                 chart_title, rows, question, source_file,
                 sql=sql, all_analytics=all_analytics,
             )
+            # ── Try to update the chart with query results ─────────────────────
+            if sql and sql.ready:
+                try:
+                    result = sql.answer(question, source_file=source_file)
+                    if not result.get("error") and result.get("data"):
+                        dyn_rows = result["data"]
+                        if len(dyn_rows) >= 2 and make_chart(dyn_rows) is not None:
+                            st.session_state[f"chart_override_{chart_key}"] = {
+                                "rows": dyn_rows,
+                                "question": question,
+                            }
+                except Exception:
+                    pass   # chart stays as original if query fails
 
     if ans_key in st.session_state:
         st.markdown(
@@ -285,7 +332,8 @@ def _chart_ai(chart_key: str, chart_title: str, rows: list,
         )
         if st.button("✕ clear", key=f"clr_{chart_key}",
                      type="secondary", use_container_width=False):
-            del st.session_state[ans_key]
+            st.session_state.pop(ans_key, None)
+            st.session_state.pop(f"chart_override_{chart_key}", None)
             st.rerun()
 
 
@@ -807,91 +855,65 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
     with c1:
         rows = data.get("dept_headcount", [])
         if rows:
-            df = pd.DataFrame(rows)
-            st.plotly_chart(
-                analytics_bar(df, "department", "employees",
-                              "👥 Employees by Department"),
-                use_container_width=True,
-            )
-            _chart_ai("dept_headcount", "Employees by Department", rows, source_file, sql)
+            df  = pd.DataFrame(rows)
+            fig = analytics_bar(df, "department", "employees", "👥 Employees by Department")
+            _render_chart("dept_headcount", fig, rows, "Employees by Department", source_file, sql)
     with c2:
         rows = data.get("dept_attrition", [])
         if rows:
-            df = pd.DataFrame(rows)
-            st.plotly_chart(
-                analytics_bar(df, "department", "attrition_pct",
-                              "📉 Attrition Rate by Department (%)", "Reds"),
-                use_container_width=True,
-            )
-            _chart_ai("dept_attrition", "Attrition Rate % by Department", rows, source_file, sql)
+            df  = pd.DataFrame(rows)
+            fig = analytics_bar(df, "department", "attrition_pct",
+                                "📉 Attrition Rate by Department (%)", "Reds")
+            _render_chart("dept_attrition", fig, rows, "Attrition Rate % by Department", source_file, sql)
 
     # ── Row 2: Salary + Age groups ────────────────────────────────────────────
     c3, c4 = st.columns(2)
     with c3:
         rows = data.get("dept_salary", [])
         if rows:
-            df = pd.DataFrame(rows)
-            st.plotly_chart(
-                analytics_bar(df, "department", "avg_salary",
-                              "💰 Avg Monthly Salary by Department ($)", "Greens"),
-                use_container_width=True,
-            )
-            _chart_ai("dept_salary", "Avg Monthly Salary by Department", rows, source_file, sql)
+            df  = pd.DataFrame(rows)
+            fig = analytics_bar(df, "department", "avg_salary",
+                                "💰 Avg Monthly Salary by Department ($)", "Greens")
+            _render_chart("dept_salary", fig, rows, "Avg Monthly Salary by Department", source_file, sql)
     with c4:
         rows = data.get("age_groups", [])
         if rows:
-            df = pd.DataFrame(rows)
-            fig = px.bar(
-                df, x="age_group", y="employees",
-                title="📅 Age Distribution",
-                template="plotly_dark",
-                color="employees",
-                color_continuous_scale="Blues",
-            )
+            df  = pd.DataFrame(rows)
+            fig = px.bar(df, x="age_group", y="employees", title="📅 Age Distribution",
+                         template="plotly_dark", color="employees",
+                         color_continuous_scale="Blues")
             fig.update_layout(**_DARK)
-            st.plotly_chart(fig, use_container_width=True)
-            _chart_ai("age_groups", "Age Distribution of Employees", rows, source_file, sql)
+            _render_chart("age_groups", fig, rows, "Age Distribution of Employees", source_file, sql)
 
     # ── Row 3: Gender + Job Satisfaction ─────────────────────────────────────
     c5, c6 = st.columns(2)
     with c5:
         rows = data.get("gender", [])
         if rows:
-            df = pd.DataFrame(rows)
-            st.plotly_chart(
-                analytics_pie(df, "gender", "employees", "⚧ Gender Breakdown"),
-                use_container_width=True,
-            )
-            _chart_ai("gender", "Overall Gender Breakdown", rows, source_file, sql)
+            df  = pd.DataFrame(rows)
+            fig = analytics_pie(df, "gender", "employees", "⚧ Gender Breakdown")
+            _render_chart("gender", fig, rows, "Overall Gender Breakdown", source_file, sql)
     with c6:
         rows = data.get("satisfaction", [])
         if rows:
             df = pd.DataFrame(rows)
             label_map = {1: "Low", 2: "Medium", 3: "High", 4: "Very High"}
             df["job_satisfaction"] = df["job_satisfaction"].map(label_map)
-            fig = px.bar(
-                df, x="job_satisfaction", y="employees",
-                title="😊 Job Satisfaction",
-                template="plotly_dark",
-                color="employees",
-                color_continuous_scale="Blues",
-            )
+            fig = px.bar(df, x="job_satisfaction", y="employees",
+                         title="😊 Job Satisfaction", template="plotly_dark",
+                         color="employees", color_continuous_scale="Blues")
             fig.update_layout(**_DARK)
-            st.plotly_chart(fig, use_container_width=True)
-            _chart_ai("satisfaction", "Job Satisfaction Distribution",
-                      df.to_dict(orient="records"), source_file, sql)
+            _render_chart("satisfaction", fig, df.to_dict(orient="records"),
+                          "Job Satisfaction Distribution", source_file, sql)
 
     # ── Row 4: Overtime + Education ───────────────────────────────────────────
     c7, c8 = st.columns(2)
     with c7:
         rows = data.get("overtime", [])
         if rows:
-            df = pd.DataFrame(rows)
-            st.plotly_chart(
-                analytics_pie(df, "overtime", "employees", "⏰ Overtime Distribution"),
-                use_container_width=True,
-            )
-            _chart_ai("overtime", "Overtime Distribution", rows, source_file, sql)
+            df  = pd.DataFrame(rows)
+            fig = analytics_pie(df, "overtime", "employees", "⏰ Overtime Distribution")
+            _render_chart("overtime", fig, rows, "Overtime Distribution", source_file, sql)
     with c8:
         rows = data.get("education", [])
         if rows:
@@ -899,32 +921,23 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             edu_map = {1: "Below College", 2: "College", 3: "Bachelor",
                        4: "Master", 5: "Doctor"}
             df["education"] = df["education"].map(edu_map)
-            fig = px.bar(
-                df, x="education", y="employees",
-                title="🎓 Education Level",
-                template="plotly_dark",
-                color="employees",
-                color_continuous_scale="Purples",
-            )
+            fig = px.bar(df, x="education", y="employees", title="🎓 Education Level",
+                         template="plotly_dark", color="employees",
+                         color_continuous_scale="Purples")
             fig.update_layout(**_DARK)
-            st.plotly_chart(fig, use_container_width=True)
-            _chart_ai("education", "Education Level Distribution",
-                      df.to_dict(orient="records"), source_file, sql)
+            _render_chart("education", fig, df.to_dict(orient="records"),
+                          "Education Level Distribution", source_file, sql)
 
     # ── Row 5: Gender by Department (full-width) ──────────────────────────────
     rows = data.get("gender_by_dept", [])
     if rows:
-        df = pd.DataFrame(rows)
-        fig = px.bar(
-            df, x="department", y="employees", color="gender",
-            barmode="group",
-            title="⚧ Gender Breakdown by Department",
-            template="plotly_dark",
-            color_discrete_map={"Male": "#1a73e8", "Female": "#e84a1a"},
-        )
+        df  = pd.DataFrame(rows)
+        fig = px.bar(df, x="department", y="employees", color="gender",
+                     barmode="group", title="⚧ Gender Breakdown by Department",
+                     template="plotly_dark",
+                     color_discrete_map={"Male": "#1a73e8", "Female": "#e84a1a"})
         fig.update_layout(**{**_DARK, "showlegend": True, "height": 320})
-        st.plotly_chart(fig, use_container_width=True)
-        _chart_ai("gender_by_dept", "Gender Breakdown by Department", rows, source_file, sql)
+        _render_chart("gender_by_dept", fig, rows, "Gender Breakdown by Department", source_file, sql)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
