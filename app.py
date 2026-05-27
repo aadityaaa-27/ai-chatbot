@@ -185,46 +185,66 @@ def export_chat(messages: list) -> str:
 
 # ── Per-chart AI helpers ──────────────────────────────────────────────────────
 
-def ask_about_chart(chart_title: str, rows: list, question: str,
-                    source_file: str = "", sql: SQLEngine = None) -> str:
+# Human-readable labels for each analytics key
+_ANALYTICS_LABELS = {
+    "dept_headcount": "Headcount by Department",
+    "dept_attrition": "Attrition Rate by Department (%)",
+    "dept_salary":    "Avg Monthly Salary by Department",
+    "age_groups":     "Headcount by Age Group",
+    "age_salary":     "Avg Monthly Salary by Age Group",
+    "gender":         "Overall Gender Breakdown",
+    "gender_salary":  "Avg Monthly Salary by Gender",
+    "gender_by_dept": "Gender Breakdown by Department",
+    "satisfaction":   "Job Satisfaction Levels",
+    "overtime":       "Overtime Distribution",
+    "education":      "Education Level Distribution",
+    "role_salary":    "Avg Monthly Salary by Job Role (top 15)",
+    "dept_avg_age":   "Avg Age & Salary by Department",
+    "attrition_age":  "Attrition Rate by Age Group",
+}
+
+
+def ask_about_chart(chart_title: str, chart_rows: list, question: str,
+                    source_file: str = "", sql: SQLEngine = None,
+                    all_analytics: dict = None) -> str:
     """
-    Ask Gemini a question about a chart.
-    If a live SQLEngine is provided it also runs the question against the
-    full database so cross-chart queries ("which age group earns most?")
-    work even when the answer isn't in the chart's local data.
+    Answer a question about a chart using ALL pre-computed analytics data.
+    Pre-built queries (age_salary, gender_salary, role_salary, etc.) are
+    fetched once when the analytics tab loads, so cross-chart questions like
+    'which age group is most paid?' work reliably without dynamic SQL.
     """
-    if not rows:
+    if not chart_rows:
         return "No data available for this chart."
 
-    tbl    = pd.DataFrame(rows).to_string(index=False)
     sf_ctx = f"Dataset: {source_file}" if source_file else "Dataset: all data combined"
 
-    # ── Live DB lookup for cross-chart / deeper questions ─────────────────────
-    db_section = ""
-    if sql and sql.ready:
-        try:
-            db_ctx, _ = sql.query(question, source_file=source_file)
-            if db_ctx and not db_ctx.startswith("DATA AVAILABILITY CHECK"):
-                db_section = (
-                    f"\n\nLIVE DATABASE RESULTS "
-                    f"(more precise — prefer these over chart data when relevant):\n"
-                    f"{db_ctx}"
-                )
-        except Exception:
-            pass   # DB unavailable — fall back to chart data only
+    # ── Build comprehensive context from ALL pre-computed analytics ───────────
+    sections = []
+    analytics = all_analytics or {}
+    for key, label in _ANALYTICS_LABELS.items():
+        rows = analytics.get(key, [])
+        if rows:
+            df_str = pd.DataFrame(rows).to_string(index=False)
+            sections.append(f"[{label}]\n{df_str}")
+
+    # Always include the primary chart's data first (in case it's not in analytics)
+    primary_tbl = pd.DataFrame(chart_rows).to_string(index=False)
+    all_data_ctx = (
+        f"[{chart_title} — primary chart]\n{primary_tbl}\n\n"
+        + "\n\n".join(sections)
+    )
 
     prompt = (
-        f"You are an expert HR analyst. Answer the question using the chart data "
-        f"AND any live database results provided below.\n\n"
-        f"Chart: {chart_title}\n{sf_ctx}\n\n"
-        f"Chart data:\n{tbl}"
-        f"{db_section}\n\n"
-        f"Question: {question}\n\n"
+        f"You are an expert HR analyst with access to full employee analytics.\n"
+        f"{sf_ctx}\n\n"
+        f"ALL AVAILABLE ANALYTICS DATA:\n"
+        f"{all_data_ctx}\n\n"
+        f"Question (asked in the context of the '{chart_title}' chart): {question}\n\n"
         "Rules:\n"
-        "- If live DB results are present, use them — they are more detailed.\n"
+        "- Use whichever table(s) from the data above best answer the question.\n"
         "- Always cite specific numbers, department names, or group labels.\n"
-        "- Highlight patterns or actionable insights where relevant.\n"
-        "- Plain English, 2–3 sentences max. No headers, no code."
+        "- Highlight the key insight or actionable finding.\n"
+        "- Plain English, 2–3 sentences. No markdown headers, no code."
     )
     client = _make_client()
     r = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
@@ -233,7 +253,9 @@ def ask_about_chart(chart_title: str, rows: list, question: str,
 
 def _chart_ai(chart_key: str, chart_title: str, rows: list,
               source_file: str = "", sql: SQLEngine = None):
-    """Render a mini-chat widget below a chart (uses live DB for deeper answers)."""
+    """Render a mini-chat widget below a chart.
+    Passes ALL pre-computed analytics to the AI so cross-chart questions
+    (e.g. 'which age group earns most?' on the salary chart) work reliably."""
     ans_key = f"ca_{chart_key}"
 
     with st.form(key=f"cf_{chart_key}", clear_on_submit=True, border=False):
@@ -248,9 +270,12 @@ def _chart_ai(chart_key: str, chart_title: str, rows: list,
             ask = st.form_submit_button("Ask ✨", use_container_width=True)
 
     if ask and question.strip():
+        # Pull the full analytics snapshot already in session_state
+        all_analytics = st.session_state.get("analytics_data", {})
         with st.spinner("Analysing…"):
             st.session_state[ans_key] = ask_about_chart(
-                chart_title, rows, question, source_file, sql=sql
+                chart_title, rows, question, source_file,
+                sql=sql, all_analytics=all_analytics,
             )
 
     if ans_key in st.session_state:

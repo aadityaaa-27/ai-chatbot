@@ -392,6 +392,48 @@ Rules:
                 f"FROM employees {w} "
                 f"GROUP BY department, gender ORDER BY department, gender"
             ),
+            # ── Cross-dimensional (used by chart AI for deeper answers) ────────
+            "age_salary": (
+                f"SELECT CASE "
+                f"WHEN age < 25 THEN 'Under 25' "
+                f"WHEN age BETWEEN 25 AND 34 THEN '25-34' "
+                f"WHEN age BETWEEN 35 AND 44 THEN '35-44' "
+                f"WHEN age BETWEEN 45 AND 54 THEN '45-54' "
+                f"ELSE '55+' END as age_group, "
+                f"ROUND(AVG(monthly_income)::numeric,0) as avg_salary, "
+                f"COUNT(*) as employees "
+                f"FROM employees {w} GROUP BY 1 ORDER BY avg_salary DESC"
+            ),
+            "gender_salary": (
+                f"SELECT gender, "
+                f"ROUND(AVG(monthly_income)::numeric,0) as avg_salary, "
+                f"COUNT(*) as employees "
+                f"FROM employees {w} GROUP BY gender ORDER BY avg_salary DESC"
+            ),
+            "role_salary": (
+                f"SELECT job_role, "
+                f"ROUND(AVG(monthly_income)::numeric,0) as avg_salary, "
+                f"COUNT(*) as employees "
+                f"FROM employees {w} GROUP BY job_role "
+                f"ORDER BY avg_salary DESC LIMIT 15"
+            ),
+            "dept_avg_age": (
+                f"SELECT department, "
+                f"ROUND(AVG(age)::numeric,1) as avg_age, "
+                f"ROUND(AVG(monthly_income)::numeric,0) as avg_salary "
+                f"FROM employees {w} GROUP BY department ORDER BY avg_salary DESC"
+            ),
+            "attrition_age": (
+                f"SELECT CASE "
+                f"WHEN age < 25 THEN 'Under 25' "
+                f"WHEN age BETWEEN 25 AND 34 THEN '25-34' "
+                f"WHEN age BETWEEN 35 AND 44 THEN '35-44' "
+                f"WHEN age BETWEEN 45 AND 54 THEN '45-54' "
+                f"ELSE '55+' END as age_group, "
+                f"ROUND(100.0*SUM(CASE WHEN attrition='Yes' THEN 1 ELSE 0 END)"
+                f"/COUNT(*)::numeric,1) as attrition_pct "
+                f"FROM employees {w} GROUP BY 1 ORDER BY attrition_pct DESC"
+            ),
         }
         results = {}
         for key, sql in queries.items():
