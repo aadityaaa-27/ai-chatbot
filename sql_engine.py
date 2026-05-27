@@ -387,6 +387,11 @@ Rules:
                 f"SELECT education, COUNT(*) as employees "
                 f"FROM employees {w} GROUP BY education ORDER BY education"
             ),
+            "gender_by_dept": (
+                f"SELECT department, gender, COUNT(*) as employees "
+                f"FROM employees {w} "
+                f"GROUP BY department, gender ORDER BY department, gender"
+            ),
         }
         results = {}
         for key, sql in queries.items():

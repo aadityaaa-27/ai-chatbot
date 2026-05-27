@@ -186,29 +186,54 @@ def export_chat(messages: list) -> str:
 # ── Per-chart AI helpers ──────────────────────────────────────────────────────
 
 def ask_about_chart(chart_title: str, rows: list, question: str,
-                    source_file: str = "") -> str:
-    """Ask Gemini a question about a specific chart's data."""
+                    source_file: str = "", sql: SQLEngine = None) -> str:
+    """
+    Ask Gemini a question about a chart.
+    If a live SQLEngine is provided it also runs the question against the
+    full database so cross-chart queries ("which age group earns most?")
+    work even when the answer isn't in the chart's local data.
+    """
     if not rows:
         return "No data available for this chart."
+
     tbl    = pd.DataFrame(rows).to_string(index=False)
     sf_ctx = f"Dataset: {source_file}" if source_file else "Dataset: all data combined"
+
+    # ── Live DB lookup for cross-chart / deeper questions ─────────────────────
+    db_section = ""
+    if sql and sql.ready:
+        try:
+            db_ctx, _ = sql.query(question, source_file=source_file)
+            if db_ctx and not db_ctx.startswith("DATA AVAILABILITY CHECK"):
+                db_section = (
+                    f"\n\nLIVE DATABASE RESULTS "
+                    f"(more precise — prefer these over chart data when relevant):\n"
+                    f"{db_ctx}"
+                )
+        except Exception:
+            pass   # DB unavailable — fall back to chart data only
+
     prompt = (
-        f"You are an expert HR analyst. Answer the question below about this chart.\n\n"
+        f"You are an expert HR analyst. Answer the question using the chart data "
+        f"AND any live database results provided below.\n\n"
         f"Chart: {chart_title}\n{sf_ctx}\n\n"
-        f"Data:\n{tbl}\n\n"
+        f"Chart data:\n{tbl}"
+        f"{db_section}\n\n"
         f"Question: {question}\n\n"
         "Rules:\n"
-        "- Answer directly and concisely using the numbers from the data above.\n"
-        "- Highlight patterns, outliers, or actionable insights where relevant.\n"
-        "- No markdown headers, no code snippets — plain English, 1–3 sentences."
+        "- If live DB results are present, use them — they are more detailed.\n"
+        "- Always cite specific numbers, department names, or group labels.\n"
+        "- Highlight patterns or actionable insights where relevant.\n"
+        "- Plain English, 2–3 sentences max. No headers, no code."
     )
-    client = _make_client()          # keep reference alive for the full request
+    client = _make_client()
     r = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
     return r.text.strip()
 
 
-def _chart_ai(chart_key: str, chart_title: str, rows: list, source_file: str = ""):
-    """Render a sticky mini-chat widget below a chart (form + answer)."""
+def _chart_ai(chart_key: str, chart_title: str, rows: list,
+              source_file: str = "", sql: SQLEngine = None):
+    """Render a mini-chat widget below a chart (uses live DB for deeper answers)."""
     ans_key = f"ca_{chart_key}"
 
     with st.form(key=f"cf_{chart_key}", clear_on_submit=True, border=False):
@@ -225,7 +250,7 @@ def _chart_ai(chart_key: str, chart_title: str, rows: list, source_file: str = "
     if ask and question.strip():
         with st.spinner("Analysing…"):
             st.session_state[ans_key] = ask_about_chart(
-                chart_title, rows, question, source_file
+                chart_title, rows, question, source_file, sql=sql
             )
 
     if ans_key in st.session_state:
@@ -763,7 +788,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                               "👥 Employees by Department"),
                 use_container_width=True,
             )
-            _chart_ai("dept_headcount", "Employees by Department", rows, source_file)
+            _chart_ai("dept_headcount", "Employees by Department", rows, source_file, sql)
     with c2:
         rows = data.get("dept_attrition", [])
         if rows:
@@ -773,7 +798,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                               "📉 Attrition Rate by Department (%)", "Reds"),
                 use_container_width=True,
             )
-            _chart_ai("dept_attrition", "Attrition Rate % by Department", rows, source_file)
+            _chart_ai("dept_attrition", "Attrition Rate % by Department", rows, source_file, sql)
 
     # ── Row 2: Salary + Age groups ────────────────────────────────────────────
     c3, c4 = st.columns(2)
@@ -786,7 +811,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                               "💰 Avg Monthly Salary by Department ($)", "Greens"),
                 use_container_width=True,
             )
-            _chart_ai("dept_salary", "Avg Monthly Salary by Department", rows, source_file)
+            _chart_ai("dept_salary", "Avg Monthly Salary by Department", rows, source_file, sql)
     with c4:
         rows = data.get("age_groups", [])
         if rows:
@@ -800,7 +825,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             )
             fig.update_layout(**_DARK)
             st.plotly_chart(fig, use_container_width=True)
-            _chart_ai("age_groups", "Age Distribution of Employees", rows, source_file)
+            _chart_ai("age_groups", "Age Distribution of Employees", rows, source_file, sql)
 
     # ── Row 3: Gender + Job Satisfaction ─────────────────────────────────────
     c5, c6 = st.columns(2)
@@ -812,7 +837,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                 analytics_pie(df, "gender", "employees", "⚧ Gender Breakdown"),
                 use_container_width=True,
             )
-            _chart_ai("gender", "Gender Breakdown", rows, source_file)
+            _chart_ai("gender", "Overall Gender Breakdown", rows, source_file, sql)
     with c6:
         rows = data.get("satisfaction", [])
         if rows:
@@ -828,9 +853,8 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             )
             fig.update_layout(**_DARK)
             st.plotly_chart(fig, use_container_width=True)
-            # Pass label-mapped df so AI sees "Low/Medium/High" not raw numbers
             _chart_ai("satisfaction", "Job Satisfaction Distribution",
-                      df.to_dict(orient="records"), source_file)
+                      df.to_dict(orient="records"), source_file, sql)
 
     # ── Row 4: Overtime + Education ───────────────────────────────────────────
     c7, c8 = st.columns(2)
@@ -842,7 +866,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                 analytics_pie(df, "overtime", "employees", "⏰ Overtime Distribution"),
                 use_container_width=True,
             )
-            _chart_ai("overtime", "Overtime Distribution", rows, source_file)
+            _chart_ai("overtime", "Overtime Distribution", rows, source_file, sql)
     with c8:
         rows = data.get("education", [])
         if rows:
@@ -859,9 +883,23 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             )
             fig.update_layout(**_DARK)
             st.plotly_chart(fig, use_container_width=True)
-            # Pass label-mapped df so AI sees "Bachelor/Master/Doctor" not 1-5
             _chart_ai("education", "Education Level Distribution",
-                      df.to_dict(orient="records"), source_file)
+                      df.to_dict(orient="records"), source_file, sql)
+
+    # ── Row 5: Gender by Department (full-width) ──────────────────────────────
+    rows = data.get("gender_by_dept", [])
+    if rows:
+        df = pd.DataFrame(rows)
+        fig = px.bar(
+            df, x="department", y="employees", color="gender",
+            barmode="group",
+            title="⚧ Gender Breakdown by Department",
+            template="plotly_dark",
+            color_discrete_map={"Male": "#1a73e8", "Female": "#e84a1a"},
+        )
+        fig.update_layout(**{**_DARK, "showlegend": True, "height": 320})
+        st.plotly_chart(fig, use_container_width=True)
+        _chart_ai("gender_by_dept", "Gender Breakdown by Department", rows, source_file, sql)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
