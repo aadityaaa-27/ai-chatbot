@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from memory_manager import MemoryManager
 from rag_engine import RAGEngine, _secret
 from sql_engine import SQLEngine
+from data_processor import DataProcessor
 
 load_dotenv()
 GEMINI_API_KEY = _secret("GEMINI_API_KEY")
@@ -380,6 +381,166 @@ def render_left(mm: MemoryManager):
             st.rerun()
 
 
+# ── Upload tab ────────────────────────────────────────────────────────────────
+
+def render_upload_tab(sql: SQLEngine):
+    st.markdown("### 📤 Upload HR Data")
+    st.caption(
+        "Upload any Excel or CSV file — even with messy, non-standard column names. "
+        "The AI will automatically map, clean and import the data into the database."
+    )
+
+    if not (sql and sql.ready):
+        st.warning("⚠️ Database connection required. Check your Supabase credentials.")
+        return
+
+    # ── File uploader ─────────────────────────────────────────────────────────
+    uploaded = st.file_uploader(
+        "Choose a file",
+        type=["csv", "xlsx", "xls"],
+        help="Supports .csv, .xlsx, .xls — any column names, any format",
+    )
+
+    if not uploaded:
+        st.markdown("""
+        **What this does:**
+        - 📋 Reads your Excel/CSV (messy column names are fine)
+        - 🤖 AI maps columns: *"Monthly CTC"* → `monthly_income`, *"Designation"* → `job_role`, etc.
+        - 🧹 Cleans data: removes ₹/$ symbols, fixes Yes/No fields, standardizes formats
+        - 💾 Stores in database — chatbot answers questions from your data instantly
+
+        **Supported columns** *(any of these, in any order, with any name)*:
+        `department, job_role, monthly_income, age, gender, attrition, education,
+        job_satisfaction, overtime, experience, performance_rating` and more.
+        """)
+        return
+
+    dp = DataProcessor()
+
+    # ── Sheet picker for Excel ────────────────────────────────────────────────
+    try:
+        raw_df, sheets = dp.read_file(uploaded)
+    except Exception as e:
+        st.error(f"Could not read file: {e}")
+        return
+
+    if sheets and len(sheets) > 1:
+        chosen_sheet = st.selectbox("📑 Select sheet", sheets)
+        uploaded.seek(0)
+        raw_df = dp.read_sheet(uploaded, chosen_sheet)
+
+    st.markdown(f"**📊 Raw file preview** — {len(raw_df):,} rows × {len(raw_df.columns)} columns")
+    st.dataframe(raw_df.head(5), use_container_width=True)
+
+    # ── AI analysis ───────────────────────────────────────────────────────────
+    st.divider()
+
+    if st.button("🔍 Analyze with AI", type="primary", use_container_width=False):
+        with st.spinner("🤖 Gemini is analyzing your columns…"):
+            try:
+                uploaded.seek(0)
+                mapping = dp.analyze_columns(raw_df)
+                st.session_state.upload_mapping  = mapping
+                st.session_state.upload_raw_df   = raw_df
+                st.session_state.upload_filename = uploaded.name
+            except Exception as e:
+                st.error(f"AI analysis failed: {e}")
+                return
+
+    if "upload_mapping" not in st.session_state:
+        return
+
+    mapping  = st.session_state.upload_mapping
+    raw_df   = st.session_state.upload_raw_df
+    col_map  = mapping.get("column_map", {})
+    notes    = mapping.get("notes", "")
+    extras   = mapping.get("extra_columns", [])
+
+    # ── Show mapping results ──────────────────────────────────────────────────
+    st.markdown("#### 🗂️ AI Column Mapping")
+    if notes:
+        st.info(f"💡 **AI Notes:** {notes}")
+
+    mapped   = {k: v for k, v in col_map.items() if v}
+    unmapped = {k: v for k, v in col_map.items() if not v}
+
+    if mapped:
+        map_rows = [
+            {"Your Column": k, "Maps To": f"✅  {v}"}
+            for k, v in mapped.items()
+        ]
+        st.dataframe(pd.DataFrame(map_rows), use_container_width=True, hide_index=True)
+    else:
+        st.warning("⚠️ No columns could be mapped. Make sure your file has HR-related data.")
+        return
+
+    if unmapped:
+        skipped = ", ".join(f"`{k}`" for k in list(unmapped.keys())[:10])
+        st.caption(f"⏭️ Skipped (no match): {skipped}")
+
+    # ── Preview cleaned data ──────────────────────────────────────────────────
+    st.markdown("#### 🧹 Cleaned Data Preview")
+    try:
+        clean_df = dp.clean_and_transform(raw_df, mapping)
+        st.caption(f"{len(clean_df):,} rows ready to import · {len(clean_df.columns)} standard columns")
+        st.dataframe(clean_df.head(5), use_container_width=True)
+    except Exception as e:
+        st.error(f"Data cleaning failed: {e}")
+        return
+
+    # ── Import options ────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### 💾 Import to Database")
+
+    mode = st.radio(
+        "Import mode",
+        ["🔄 Replace existing data", "➕ Add to existing data"],
+        help="Replace wipes the current table first. Add keeps existing records.",
+    )
+    import_mode = "replace" if "Replace" in mode else "append"
+
+    if import_mode == "replace":
+        st.warning(
+            f"⚠️ **Replace mode** will delete all current employees and load "
+            f"{len(clean_df):,} new rows from **{st.session_state.upload_filename}**."
+        )
+
+    col_imp, _ = st.columns([1, 3])
+    with col_imp:
+        do_import = st.button("✅ Import Now", type="primary", use_container_width=True)
+
+    if do_import:
+        progress = st.progress(0, text="Preparing…")
+        try:
+            sb = sql._sb
+            progress.progress(10, text="Clearing old data…" if import_mode == "replace" else "Connecting…")
+
+            # Clear analytics cache so charts refresh
+            st.session_state.pop("analytics_data", None)
+
+            progress.progress(30, text=f"Inserting {len(clean_df):,} rows…")
+            result = dp.insert_to_db(clean_df, sb, mode=import_mode)
+            progress.progress(100, text="Done!")
+
+            if result["inserted"] > 0:
+                st.success(
+                    f"✅ **{result['inserted']:,} employees imported** successfully!\n\n"
+                    f"Go to the **💬 Chat** tab and ask: *'How many employees are there?'*"
+                )
+                # Clear mapping from state so next upload starts fresh
+                st.session_state.pop("upload_mapping", None)
+                st.session_state.pop("upload_raw_df", None)
+            else:
+                st.error(
+                    f"Import failed — 0 rows inserted.\n\n"
+                    + ("\n".join(result.get("errors", [])))
+                )
+
+        except Exception as e:
+            progress.empty()
+            st.error(f"Import error: {e}")
+
+
 # ── Analytics tab ─────────────────────────────────────────────────────────────
 
 def render_analytics(sql: SQLEngine):
@@ -539,7 +700,7 @@ def main():
         render_left(mm)
 
     with right_col:
-        tab_chat, tab_analytics = st.tabs(["💬 Chat", "📊 Analytics"])
+        tab_chat, tab_analytics, tab_upload = st.tabs(["💬 Chat", "📊 Analytics", "📤 Upload Data"])
 
         # ── Chat tab ─────────────────────────────────────────────────────────
         with tab_chat:
@@ -589,6 +750,10 @@ def main():
         # ── Analytics tab ─────────────────────────────────────────────────────
         with tab_analytics:
             render_analytics(sql)
+
+        # ── Upload tab ─────────────────────────────────────────────────────────
+        with tab_upload:
+            render_upload_tab(sql)
 
     # ── Handle quick prompt ───────────────────────────────────────────────────
     if "quick_prompt" in st.session_state:
