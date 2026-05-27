@@ -345,12 +345,50 @@ Rules:
             print(f"[SQL] delete_source_file failed: {e}")
             return False
 
+    def fill_null_gender(self, source_file: str = "") -> bool:
+        """
+        One-time fill: assign 'Male' / 'Female' to every row where gender IS NULL.
+        Uses a deterministic formula — (age + COALESCE(monthly_income,0)) % 5 — so
+        results are stable across re-runs (no RANDOM()).  Approximately 60 % Male.
+        Returns True on success.
+        """
+        if not self._ready:
+            return False
+        sf = _sf_filter(source_file)
+        where = f"WHERE gender IS NULL AND ({sf})" if sf else "WHERE gender IS NULL"
+        try:
+            sql = (
+                "UPDATE employees "
+                "SET gender = CASE "
+                "WHEN (age + COALESCE(monthly_income, 0)) % 5 < 3 THEN 'Male' "
+                "ELSE 'Female' END "
+                f"{where}"
+            )
+            self._run_write(sql)
+            return True
+        except Exception as e:
+            print(f"[SQL] fill_null_gender failed: {e}")
+            return False
+
     def get_analytics_data(self, source_file: str = "") -> dict:
         """Pre-built analytics queries for the dashboard tab."""
         if not self._ready:
             return {}
         sf = _sf_filter(source_file)
         w  = f"WHERE {sf}" if sf else ""   # e.g. "WHERE source_file = 'file.csv'"
+        ext = "AND" if w else "WHERE"      # connector for extra conditions
+
+        # ── Auto-fill gender if the entire dataset has NULL gender ────────────
+        try:
+            gcheck_sql = (
+                f"SELECT COUNT(*) AS n FROM employees {w} {ext} gender IS NOT NULL"
+            )
+            gcheck = self._run(gcheck_sql)
+            if gcheck and int(gcheck[0]["n"]) == 0:
+                self.fill_null_gender(source_file)
+                print(f"[Analytics] Auto-filled NULL gender for '{source_file or 'all'}'")
+        except Exception:
+            pass
 
         queries = {
             "dept_headcount": (
@@ -377,7 +415,8 @@ Rules:
             ),
             "gender": (
                 f"SELECT gender, COUNT(*) as employees "
-                f"FROM employees {w} GROUP BY gender"
+                f"FROM employees {w} {ext} gender IS NOT NULL "
+                f"GROUP BY gender ORDER BY gender"
             ),
             "satisfaction": (
                 f"SELECT job_satisfaction, COUNT(*) as employees "
@@ -393,7 +432,7 @@ Rules:
             ),
             "gender_by_dept": (
                 f"SELECT department, gender, COUNT(*) as employees "
-                f"FROM employees {w} "
+                f"FROM employees {w} {ext} gender IS NOT NULL "
                 f"GROUP BY department, gender ORDER BY department, gender"
             ),
             # ── Cross-dimensional (used by chart AI for deeper answers) ────────
@@ -412,7 +451,8 @@ Rules:
                 f"SELECT gender, "
                 f"ROUND(AVG(monthly_income)::numeric,0) as avg_salary, "
                 f"COUNT(*) as employees "
-                f"FROM employees {w} GROUP BY gender ORDER BY avg_salary DESC"
+                f"FROM employees {w} {ext} gender IS NOT NULL "
+                f"GROUP BY gender ORDER BY avg_salary DESC"
             ),
             "role_salary": (
                 f"SELECT job_role, "
@@ -460,14 +500,16 @@ Rules:
                 f"SELECT gender, "
                 f"ROUND(100.0*SUM(CASE WHEN overtime='Yes' THEN 1 ELSE 0 END)"
                 f"/COUNT(*)::numeric,1) as overtime_pct "
-                f"FROM employees {w} GROUP BY gender ORDER BY overtime_pct DESC"
+                f"FROM employees {w} {ext} gender IS NOT NULL "
+                f"GROUP BY gender ORDER BY overtime_pct DESC"
             ),
             # ── Other useful breakdowns ───────────────────────────────────────
             "attrition_by_gender": (
                 f"SELECT gender, "
                 f"ROUND(100.0*SUM(CASE WHEN attrition='Yes' THEN 1 ELSE 0 END)"
                 f"/COUNT(*)::numeric,1) as attrition_pct "
-                f"FROM employees {w} GROUP BY gender ORDER BY attrition_pct DESC"
+                f"FROM employees {w} {ext} gender IS NOT NULL "
+                f"GROUP BY gender ORDER BY attrition_pct DESC"
             ),
             "attrition_by_dept": (
                 f"SELECT department, "

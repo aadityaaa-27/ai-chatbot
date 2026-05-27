@@ -999,8 +999,8 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
         rows = data.get("gender", [])
         if rows:
             df  = pd.DataFrame(rows)
-            fig = analytics_pie(df, "gender", "employees", "⚧ Gender Breakdown")
-            _render_chart("gender", fig, rows, "Overall Gender Breakdown", source_file, sql)
+            fig = analytics_pie(df, "gender", "employees", "👫 Male / Female Distribution")
+            _render_chart("gender", fig, rows, "Male / Female Distribution", source_file, sql)
     with c6:
         rows = data.get("satisfaction", [])
         if rows:
@@ -1041,7 +1041,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
     if rows:
         df  = pd.DataFrame(rows)
         fig = px.bar(df, x="department", y="employees", color="gender",
-                     barmode="group", title="⚧ Gender Breakdown by Department",
+                     barmode="group", title="👫 Male / Female by Department",
                      template="plotly_dark",
                      color_discrete_map={"Male": "#1a73e8", "Female": "#e84a1a"})
         fig.update_layout(**{**_DARK, "showlegend": True, "height": 320})
