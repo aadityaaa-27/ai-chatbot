@@ -275,9 +275,9 @@ NOT like this: "Col Name": "null"
         """
         safe_name = source_file.replace("'", "''")
         df = df.copy()
-        # Do NOT add source_file to the DataFrame for REST insert —
-        # PostgREST schema cache may not know about the new column yet (PGRST204).
-        # We tag rows via an RPC UPDATE after insert instead.
+        # Strip source_file — don't send it in the REST insert payload.
+        # PostgREST schema cache may reject unknown columns (PGRST204).
+        # We tag rows after insert using MAX(id) to identify newly added rows.
         if "source_file" in df.columns:
             df = df.drop(columns=["source_file"])
 
@@ -303,6 +303,17 @@ NOT like this: "Col Name": "null"
                 for k, v in row.items()
             })
 
+        # ── Snapshot MAX(id) before insert so we can tag exactly these rows ──
+        max_id_before = 0
+        try:
+            res = sb_client.rpc(
+                "run_employee_query",
+                {"query_sql": "SELECT COALESCE(MAX(id), 0) as max_id FROM employees"}
+            ).execute()
+            max_id_before = int(res.data[0]["max_id"]) if res.data else 0
+        except Exception:
+            pass
+
         batch_size = 100
         inserted, failed = 0, 0
         errors = []
@@ -316,15 +327,15 @@ NOT like this: "Col Name": "null"
                 failed += len(batch)
                 errors.append(str(e)[:120])
 
-        # Tag all newly-inserted rows (source_file IS NULL) with the filename.
-        # Uses run_employee_write RPC (needs setup_source_file.sql to have been run).
+        # Tag newly-inserted rows using id > max_id_before.
+        # This is precise — doesn't depend on source_file being NULL.
         if inserted > 0:
             try:
                 sb_client.rpc(
                     "run_employee_write",
                     {"query_sql":
                         f"UPDATE employees SET source_file = '{safe_name}' "
-                        f"WHERE source_file IS NULL"}
+                        f"WHERE id > {max_id_before}"}
                 ).execute()
             except Exception as e:
                 print(f"[DataProcessor] source_file tag failed: {e}")

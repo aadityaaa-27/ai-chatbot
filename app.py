@@ -389,18 +389,43 @@ def render_left(mm: MemoryManager):
             st.session_state.pop("analytics_data", None)   # refresh charts
             st.rerun()
 
-        # Delete dataset button (only when a specific one is selected)
+        # Actions for selected dataset
         if new_sf:
-            if st.button(f"🗑️ Delete '{new_sf}'", use_container_width=True,
-                         key="del_dataset_btn"):
-                with st.spinner("Deleting…"):
-                    if sql.delete_source_file(new_sf):
-                        st.session_state.active_source_file = ""
-                        st.session_state.pop("analytics_data", None)
-                        st.success(f"Deleted '{new_sf}'")
-                        st.rerun()
-                    else:
-                        st.error("Delete failed.")
+            col_ren, col_del = st.columns(2)
+            with col_del:
+                if st.button("🗑️ Delete", use_container_width=True, key="del_dataset_btn"):
+                    with st.spinner("Deleting…"):
+                        if sql.delete_source_file(new_sf):
+                            st.session_state.active_source_file = ""
+                            st.session_state.pop("analytics_data", None)
+                            st.rerun()
+                        else:
+                            st.error("Delete failed.")
+            with col_ren:
+                if st.button("✏️ Rename", use_container_width=True, key="rename_dataset_btn"):
+                    st.session_state.renaming_dataset = new_sf
+
+        # Rename input
+        if st.session_state.get("renaming_dataset"):
+            old = st.session_state.renaming_dataset
+            new_name = st.text_input(f"New name for '{old}'", key="rename_input",
+                                     placeholder="e.g. Q1_2025_employees")
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                if st.button("✅ Save", use_container_width=True, key="rename_save"):
+                    if new_name.strip():
+                        with st.spinner("Renaming…"):
+                            if sql.retag_dataset(old, new_name.strip()):
+                                st.session_state.active_source_file = new_name.strip()
+                                st.session_state.pop("renaming_dataset", None)
+                                st.session_state.pop("analytics_data", None)
+                                st.rerun()
+                            else:
+                                st.error("Rename failed.")
+            with rc2:
+                if st.button("Cancel", use_container_width=True, key="rename_cancel"):
+                    st.session_state.pop("renaming_dataset", None)
+                    st.rerun()
 
     st.divider()
 

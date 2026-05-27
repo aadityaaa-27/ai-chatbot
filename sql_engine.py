@@ -184,6 +184,22 @@ Rules:
         )
         return ctx, rows
 
+    def retag_dataset(self, old_name: str, new_name: str) -> bool:
+        """Rename an existing dataset (change source_file value)."""
+        if not self._ready:
+            return False
+        try:
+            old_safe = old_name.replace("'", "''")
+            new_safe = new_name.replace("'", "''")
+            self._run_write(
+                f"UPDATE employees SET source_file = '{new_safe}' "
+                f"WHERE source_file = '{old_safe}'"
+            )
+            return True
+        except Exception as e:
+            print(f"[SQL] retag failed: {e}")
+            return False
+
     def has_source_file_column(self) -> bool:
         """Check whether the source_file column exists (setup_source_file.sql been run)."""
         try:
