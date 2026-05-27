@@ -88,22 +88,12 @@ class SQLEngine:
             self._sb     = create_client(url, key)
             self._client = genai.Client(api_key=_secret("GEMINI_API_KEY"))
             self._ready  = True
-            # Ensure source_file column exists (safe to run multiple times)
-            self._run(
-                "ALTER TABLE employees "
-                "ADD COLUMN IF NOT EXISTS source_file TEXT DEFAULT 'original'"
-            )
-            # Tag any pre-existing / untagged rows so they appear in the dataset selector
+            # Tag untagged rows (only works after setup_source_file.sql has been run)
             try:
-                self._run(
+                self._run_write(
                     "UPDATE employees SET source_file = 'original' "
                     "WHERE source_file IS NULL"
                 )
-            except Exception:
-                pass
-            # Reload PostgREST schema cache so REST inserts see the new column
-            try:
-                self._run("NOTIFY pgrst, 'reload schema'")
             except Exception:
                 pass
         except Exception as e:
@@ -148,6 +138,11 @@ Rules:
 
     # ── Execute on Supabase ───────────────────────────────────────────────────
 
+    def _run_write(self, sql: str):
+        """Execute a non-SELECT statement via the run_employee_write RPC."""
+        res = self._sb.rpc("run_employee_write", {"query_sql": sql}).execute()
+        return res.data
+
     def _run(self, sql: str) -> list:
         res = self._sb.rpc("run_employee_query", {"query_sql": sql}).execute()
         data = res.data
@@ -189,6 +184,14 @@ Rules:
         )
         return ctx, rows
 
+    def has_source_file_column(self) -> bool:
+        """Check whether the source_file column exists (setup_source_file.sql been run)."""
+        try:
+            self._run("SELECT source_file FROM employees LIMIT 1")
+            return True
+        except Exception:
+            return False
+
     def get_source_files(self) -> list:
         """Return list of dicts: [{source_file, count}] for all datasets."""
         if not self._ready:
@@ -202,6 +205,14 @@ Rules:
                 "ORDER BY source_file"
             )
         except Exception:
+            # source_file column not set up yet — fall back to total count
+            try:
+                r = self._sb.table("employees").select("*", count="exact").execute()
+                count = r.count or 0
+                if count > 0:
+                    return [{"source_file": "original", "count": count}]
+            except Exception:
+                pass
             return []
 
     def delete_source_file(self, source_file: str) -> bool:
@@ -209,8 +220,7 @@ Rules:
         if not self._ready or not source_file:
             return False
         try:
-            safe = source_file.replace("'", "''")
-            self._run(f"DELETE FROM employees WHERE source_file = '{safe}'")
+            self._sb.table("employees").delete().eq("source_file", source_file).execute()
             return True
         except Exception as e:
             print(f"[SQL] delete_source_file failed: {e}")

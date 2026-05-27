@@ -40,39 +40,41 @@ html, body, .stApp { background: #0d0d0d !important; }
 
 /* Session cards */
 .scard {
-    background: #181818; border: 1px solid #252525;
-    border-radius: 7px; padding: 8px 10px 6px 10px;
-    margin: 3px 0;
+    background: #141414; border: 1px solid #222;
+    border-radius: 8px; padding: 9px 12px 7px 12px;
+    margin: 3px 0; transition: border-color .15s;
 }
-.scard.active { border-color: #1a73e8; background: #0f1f3d; }
-.scard-title  { font-size: 0.82rem; font-weight: 600; color: #ddd;
+.scard:hover { border-color: #333; }
+.scard.active { border-color: #1a73e8; background: #0d1f40; }
+.scard-title  { font-size: 0.83rem; font-weight: 600; color: #e0e0e0;
                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.scard-meta   { font-size: 0.65rem; color: #444; margin-top: 2px; }
-
-/* Chips */
-.chip {
-    display: inline-block; background: #1a56db; color: #fff !important;
-    padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; margin: 2px 1px;
-}
+.scard-meta   { font-size: 0.64rem; color: #3a3a3a; margin-top: 2px; }
 
 /* Section label */
 .sec {
-    font-size: 0.64rem; font-weight: 700; letter-spacing: .09em;
-    text-transform: uppercase; color: #3a3a3a; margin: 0.7rem 0 0.25rem 0;
+    font-size: 0.60rem; font-weight: 700; letter-spacing: .10em;
+    text-transform: uppercase; color: #333; margin: 0.8rem 0 0.3rem 0;
 }
 
-hr { border-color: #1e1e1e !important; margin: 0.4rem 0 !important; }
+/* Status badge */
+.status-ok  { color: #4ade80; font-size: 0.75rem; }
+.status-err { color: #f87171; font-size: 0.75rem; }
 
-/* Metrics */
-[data-testid="stMetric"]      { padding: 0 !important; }
-[data-testid="stMetricValue"] { font-size: 1rem !important; }
-[data-testid="stMetricLabel"] { font-size: 0.68rem !important; }
+/* Setup notice */
+.setup-box {
+    background: #1a1200; border: 1px solid #3d2e00;
+    border-radius: 8px; padding: 10px 12px; font-size: 0.78rem; color: #f5c518;
+}
+
+hr { border-color: #1a1a1a !important; margin: 0.5rem 0 !important; }
 
 /* Form input */
 [data-testid="stForm"] {
     border: none !important; padding: 0 !important;
     background: transparent !important;
 }
+/* Tighten tab font */
+[data-testid="stTabs"] button { font-size: 0.84rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -276,13 +278,16 @@ def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str
 # ── Left panel ────────────────────────────────────────────────────────────────
 
 def render_left(mm: MemoryManager):
-    st.markdown("### 🤖 AI Chatbot")
     sql: SQLEngine = st.session_state.get("sql")
 
+    # ── Header ────────────────────────────────────────────────────────────────
+    st.markdown("## 🤖 AI Chatbot")
     if sql and sql.ready:
-        st.caption("Gemini 2.0 Flash · 🟢 Database connected · Memory")
+        st.markdown('<span class="status-ok">● Connected</span> · Gemini 2.0 Flash',
+                    unsafe_allow_html=True)
     else:
-        st.caption("Gemini 2.0 Flash · 🔴 No database · Memory")
+        st.markdown('<span class="status-err">● No database</span> · Gemini 2.0 Flash',
+                    unsafe_allow_html=True)
 
     if st.button("✏️  New Chat", type="primary", use_container_width=True):
         st.session_state.messages        = []
@@ -299,16 +304,15 @@ def render_left(mm: MemoryManager):
         st.caption("No chats yet.")
     else:
         cur_sid = st.session_state.get("current_sid")
-        with st.container(height=260):
+        with st.container(height=240):
             for s in sessions:
                 is_active = s["id"] == cur_sid
                 card_cls  = "scard active" if is_active else "scard"
-                created   = ""
                 try:
-                    created = datetime.fromisoformat(s["created_at"]).strftime("%d %b")
+                    created = datetime.fromisoformat(s["created_at"]).strftime("%d %b, %H:%M")
                 except Exception:
-                    pass
-                meta = f"{created} · {s['msg_count']} msgs"
+                    created = ""
+                meta = f"{created}  ·  {s['msg_count']} msgs"
                 st.markdown(
                     f'<div class="{card_cls}">'
                     f'<div class="scard-title">{s["title"]}</div>'
@@ -316,9 +320,9 @@ def render_left(mm: MemoryManager):
                     f'</div>',
                     unsafe_allow_html=True,
                 )
-                btn_load, btn_del = st.columns([3, 1])
-                with btn_load:
-                    if st.button("Load", key=f"load_{s['id']}", use_container_width=True):
+                col_l, col_d = st.columns([5, 1])
+                with col_l:
+                    if st.button("↩ Open", key=f"load_{s['id']}", use_container_width=True):
                         msgs = mm.get_session_messages(s["id"])
                         st.session_state.messages = [
                             {"role": m["role"], "content": m["content"], "chart_data": []}
@@ -327,8 +331,8 @@ def render_left(mm: MemoryManager):
                         st.session_state.current_sid     = s["id"]
                         st.session_state.title_generated = True
                         st.rerun()
-                with btn_del:
-                    if st.button("🗑️", key=f"del_{s['id']}", use_container_width=True):
+                with col_d:
+                    if st.button("🗑", key=f"del_{s['id']}", use_container_width=True):
                         mm.delete_session(s["id"])
                         if st.session_state.get("current_sid") == s["id"]:
                             st.session_state.messages        = []
@@ -338,27 +342,21 @@ def render_left(mm: MemoryManager):
 
     st.divider()
 
-    # ── Memory ───────────────────────────────────────────────────────────────
-    st.markdown('<div class="sec">🧠 Memory</div>', unsafe_allow_html=True)
-    stats = mm.get_stats()
-    c1, c2 = st.columns(2)
-    c1.metric("Messages", stats["total_messages"])
-    c2.metric("Facts",    stats["facts_count"])
-    if stats["known_facts"]:
-        st.markdown(
-            "".join(f'<span class="chip">{k}: {v}</span>'
-                    for k, v in stats["known_facts"].items()),
-            unsafe_allow_html=True,
-        )
-    else:
-        st.caption("Tell me your name, job, location…")
-
-    st.divider()
-
     # ── Dataset selector ──────────────────────────────────────────────────────
     st.markdown('<div class="sec">📂 Dataset</div>', unsafe_allow_html=True)
 
     sql: SQLEngine = st.session_state.get("sql")
+
+    # Show setup notice if source_file column is missing
+    if sql and sql.ready and not sql.has_source_file_column():
+        st.markdown(
+            '<div class="setup-box">⚠️ <b>One-time setup needed</b><br>'
+            'Run <code>setup_source_file.sql</code> in Supabase → SQL Editor<br>'
+            'to enable dataset tracking.</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("")
+
     datasets = sql.get_source_files() if (sql and sql.ready) else []
 
     if not datasets:

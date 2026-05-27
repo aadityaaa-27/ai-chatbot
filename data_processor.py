@@ -283,18 +283,13 @@ NOT like this: "Col Name": "null"
 
         if mode == "replace_all":
             try:
-                sb_client.rpc(
-                    "run_employee_query",
-                    {"query_sql": "DELETE FROM employees"}
-                ).execute()
+                # Use REST API delete (not RPC — run_employee_query blocks DELETE)
+                sb_client.table("employees").delete().gte("id", 0).execute()
             except Exception as e:
                 print(f"[DataProcessor] replace_all clear failed: {e}")
         elif mode == "replace_dataset":
             try:
-                sb_client.rpc(
-                    "run_employee_query",
-                    {"query_sql": f"DELETE FROM employees WHERE source_file = '{safe_name}'"}
-                ).execute()
+                sb_client.table("employees").delete().eq("source_file", source_file).execute()
             except Exception as e:
                 print(f"[DataProcessor] replace_dataset clear failed: {e}")
 
@@ -322,26 +317,17 @@ NOT like this: "Col Name": "null"
                 errors.append(str(e)[:120])
 
         # Tag all newly-inserted rows (source_file IS NULL) with the filename.
-        # This uses RPC so it bypasses PostgREST schema-cache restrictions.
+        # Uses run_employee_write RPC (needs setup_source_file.sql to have been run).
         if inserted > 0:
             try:
                 sb_client.rpc(
-                    "run_employee_query",
+                    "run_employee_write",
                     {"query_sql":
                         f"UPDATE employees SET source_file = '{safe_name}' "
                         f"WHERE source_file IS NULL"}
                 ).execute()
             except Exception as e:
                 print(f"[DataProcessor] source_file tag failed: {e}")
-
-            # Tell PostgREST to reload schema cache for future inserts
-            try:
-                sb_client.rpc(
-                    "run_employee_query",
-                    {"query_sql": "NOTIFY pgrst, 'reload schema'"}
-                ).execute()
-            except Exception:
-                pass  # non-critical
 
         return {
             "inserted": inserted,
