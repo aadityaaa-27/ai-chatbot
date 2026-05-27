@@ -75,11 +75,23 @@ html, body, .stApp { background: #0d0d0d !important; }
 
 hr { border-color: #1a1a1a !important; margin: 0.5rem 0 !important; }
 
-/* Form input */
-[data-testid="stForm"] {
-    border: none !important; padding: 0 !important;
-    background: transparent !important;
+/* Sticky chat input — dark theme */
+[data-testid="stChatInput"] {
+    background: #0d0d0d !important;
+    border-top: 1px solid #1e1e1e !important;
+    padding: 6px 0 !important;
 }
+[data-testid="stChatInput"] textarea {
+    background: #141414 !important;
+    color: #e0e0e0 !important;
+    border: 1px solid #2a2a2a !important;
+    border-radius: 10px !important;
+}
+[data-testid="stChatInput"] textarea:focus {
+    border-color: #1a73e8 !important;
+    box-shadow: 0 0 0 1px #1a73e8 !important;
+}
+
 /* Tighten tab font */
 [data-testid="stTabs"] button { font-size: 0.84rem !important; }
 </style>
@@ -857,16 +869,9 @@ def main():
                         if fig:
                             st.plotly_chart(fig, use_container_width=True)
 
-            # ── Input form ────────────────────────────────────────────────────
-            with st.form("chat_form", clear_on_submit=True, border=False):
-                col_in, col_btn = st.columns([12, 1])
-                with col_in:
-                    user_input = st.text_input(
-                        "msg", placeholder="Ask me anything…",
-                        label_visibility="collapsed",
-                    )
-                with col_btn:
-                    submitted = st.form_submit_button("↑", use_container_width=True)
+            # ── Sticky chat input (always visible at bottom of tab) ───────────────
+            user_input = st.chat_input("Ask me anything…")
+            submitted  = bool(user_input)
 
         # ── Analytics tab ─────────────────────────────────────────────────────
         with tab_analytics:
