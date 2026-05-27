@@ -93,6 +93,14 @@ class SQLEngine:
                 "ALTER TABLE employees "
                 "ADD COLUMN IF NOT EXISTS source_file TEXT DEFAULT 'original'"
             )
+            # Tag any pre-existing / untagged rows so they appear in the dataset selector
+            try:
+                self._run(
+                    "UPDATE employees SET source_file = 'original' "
+                    "WHERE source_file IS NULL"
+                )
+            except Exception:
+                pass
             # Reload PostgREST schema cache so REST inserts see the new column
             try:
                 self._run("NOTIFY pgrst, 'reload schema'")
@@ -182,15 +190,15 @@ Rules:
         return ctx, rows
 
     def get_source_files(self) -> list:
-        """Return list of dicts: [{source_file, count}] for all uploaded datasets."""
+        """Return list of dicts: [{source_file, count}] for all datasets."""
         if not self._ready:
             return []
         try:
             return self._run(
-                "SELECT source_file, COUNT(*) as count "
+                "SELECT COALESCE(source_file, 'original') as source_file, "
+                "COUNT(*) as count "
                 "FROM employees "
-                "WHERE source_file IS NOT NULL "
-                "GROUP BY source_file "
+                "GROUP BY COALESCE(source_file, 'original') "
                 "ORDER BY source_file"
             )
         except Exception:
