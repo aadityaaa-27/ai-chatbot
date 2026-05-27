@@ -263,19 +263,37 @@ NOT like this: "Col Name": "null"
     # ── Step 4: Insert to Supabase ────────────────────────────────────────────
 
     def insert_to_db(self, df: pd.DataFrame, sb_client,
-                     mode: str = "replace") -> dict:
+                     mode: str = "add_new",
+                     source_file: str = "upload") -> dict:
         """
         Insert the processed DataFrame into the employees table.
-        mode = 'replace' clears existing data first; 'append' adds rows.
+        mode:
+          'add_new'          — just insert (new dataset alongside existing ones)
+          'replace_dataset'  — delete rows with same source_file, then insert
+          'replace_all'      — delete ALL rows, then insert
+        source_file: filename tag stored in each row so datasets stay separate.
         """
-        if mode == "replace":
+        # Tag every row with the source_file name
+        safe_name = source_file.replace("'", "''")
+        df = df.copy()
+        df["source_file"] = source_file
+
+        if mode == "replace_all":
             try:
                 sb_client.rpc(
                     "run_employee_query",
                     {"query_sql": "DELETE FROM employees"}
                 ).execute()
             except Exception as e:
-                print(f"[DataProcessor] clear failed: {e}")
+                print(f"[DataProcessor] replace_all clear failed: {e}")
+        elif mode == "replace_dataset":
+            try:
+                sb_client.rpc(
+                    "run_employee_query",
+                    {"query_sql": f"DELETE FROM employees WHERE source_file = '{safe_name}'"}
+                ).execute()
+            except Exception as e:
+                print(f"[DataProcessor] replace_dataset clear failed: {e}")
 
         records = df.to_dict(orient="records")
 
@@ -309,11 +327,13 @@ NOT like this: "Col Name": "null"
 
     # ── Full pipeline (convenience) ───────────────────────────────────────────
 
-    def run(self, df: pd.DataFrame, sb_client, mode: str = "replace") -> dict:
+    def run(self, df: pd.DataFrame, sb_client,
+            mode: str = "add_new", source_file: str = "upload") -> dict:
         """analyze → clean → insert. Returns result dict."""
         mapping  = self.analyze_columns(df)
         clean_df = self.clean_and_transform(df, mapping)
-        result   = self.insert_to_db(clean_df, sb_client, mode=mode)
+        result   = self.insert_to_db(clean_df, sb_client,
+                                     mode=mode, source_file=source_file)
         result["mapping"] = mapping
         result["columns_mapped"] = len(
             [v for v in mapping.get("column_map", {}).values() if v]

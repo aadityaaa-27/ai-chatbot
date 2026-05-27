@@ -157,16 +157,21 @@ def export_chat(messages: list) -> str:
 # ── Gemini helpers ────────────────────────────────────────────────────────────
 
 def build_system_prompt(memory_manager: MemoryManager, rag_context: str = "",
-                        emp_count: int = 0) -> str:
-    count_str = f"{emp_count:,}" if emp_count else "several thousand"
+                        emp_count: int = 0, source_file: str = "") -> str:
+    count_str   = f"{emp_count:,}" if emp_count else "several thousand"
+    dataset_ctx = (
+        f"You are currently querying the dataset from file: '{source_file}' "
+        f"({count_str} records).\n"
+        if source_file else
+        f"You have access to all datasets combined ({count_str} total records).\n"
+    )
     base = (
         "You are a smart, helpful, friendly AI assistant for an enterprise company. "
-        "You have been given DIRECT ACCESS to the company's live employee database "
-        f"({count_str} employee records). "
+        "You have been given DIRECT ACCESS to the company's live employee database. "
+        f"{dataset_ctx}"
         "When asked ANYTHING about employees, headcount, salary, attrition, departments, "
         "or any HR metrics — you MUST answer using the live database results provided to you. "
-        "NEVER say you lack access to employee data. You have it. "
-        f"The current total employee count in the database is {count_str}.\n\n"
+        "NEVER say you lack access to employee data. You have it.\n\n"
         "KNOWN COMPANY POLICIES (answer these directly without querying the DB):\n"
         "- Every employee receives exactly 20 paid holidays per year.\n\n"
         "You also have broad general knowledge across science, math, technology, programming, "
@@ -232,20 +237,24 @@ def ai_extract_facts(client: genai.Client, msg: str) -> dict:
 
 
 def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str,
-                 rag: RAGEngine = None, sql: SQLEngine = None):
+                 rag: RAGEngine = None, sql: SQLEngine = None,
+                 source_file: str = ""):
     """Send a message and return (response_text, client, sql_rows)."""
     sql_ctx, sql_rows = "", []
     rag_ctx = ""
 
-    emp_count = sql.employee_count() if (sql and sql.ready) else 0
+    emp_count = sql.employee_count(source_file=source_file) if (sql and sql.ready) else 0
 
     if sql and sql.ready:
-        sql_ctx, sql_rows = sql.query(user_input)
+        sql_ctx, sql_rows = sql.query(user_input, source_file=source_file)
     if rag and rag.ready and not sql_ctx:
         rag_ctx = rag.get_context(user_input)
 
     combined = "\n\n".join(filter(None, [sql_ctx, rag_ctx]))
-    system_prompt = build_system_prompt(memory_manager, combined, emp_count=emp_count)
+    system_prompt = build_system_prompt(
+        memory_manager, combined,
+        emp_count=emp_count, source_file=source_file,
+    )
     hist = memory_manager.get_history_for_gemini(session_id=session_id)
 
     client = _make_client()
@@ -266,32 +275,10 @@ def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str
 
 # ── Left panel ────────────────────────────────────────────────────────────────
 
-def _save_db_config(url: str, key: str):
-    """Persist chosen DB credentials to data/db_config.json."""
-    import json, pathlib
-    pathlib.Path("data").mkdir(exist_ok=True)
-    pathlib.Path("data/db_config.json").write_text(
-        json.dumps({"SUPABASE_URL": url, "SUPABASE_KEY": key}, indent=2)
-    )
-
-
-def _load_db_config() -> dict:
-    import json, pathlib
-    p = pathlib.Path("data/db_config.json")
-    if p.exists():
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            pass
-    return {}
-
-
 def render_left(mm: MemoryManager):
     st.markdown("### 🤖 AI Chatbot")
     sql: SQLEngine = st.session_state.get("sql")
-    rag: RAGEngine = st.session_state.get("rag")
 
-    # Status caption — no employee count
     if sql and sql.ready:
         st.caption("Gemini 2.0 Flash · 🟢 Database connected · Memory")
     else:
@@ -368,61 +355,54 @@ def render_left(mm: MemoryManager):
 
     st.divider()
 
-    # ── Database settings ─────────────────────────────────────────────────────
-    st.markdown('<div class="sec">🗄️ Database</div>', unsafe_allow_html=True)
+    # ── Dataset selector ──────────────────────────────────────────────────────
+    st.markdown('<div class="sec">📂 Dataset</div>', unsafe_allow_html=True)
 
     sql: SQLEngine = st.session_state.get("sql")
-    cfg = _load_db_config()
-    current_url = cfg.get("SUPABASE_URL") or _secret("SUPABASE_URL") or ""
+    datasets = sql.get_source_files() if (sql and sql.ready) else []
 
-    # Show current connection
-    if sql and sql.ready:
-        short_url = current_url.replace("https://", "")[:28] + "…" if current_url else "connected"
-        st.success(f"🟢 {short_url}", icon=None)
+    if not datasets:
+        st.caption("No datasets yet. Upload a file →")
     else:
-        st.warning("🔴 Not connected")
+        ds_names    = [d["source_file"] for d in datasets]
+        ds_labels   = [f"{d['source_file']}  ({int(d['count']):,} rows)" for d in datasets]
+        all_label   = f"📊 All datasets  ({sum(int(d['count']) for d in datasets):,} rows)"
+        options     = [all_label] + ds_labels
 
-    with st.expander("🔌 Change database"):
-        new_url = st.text_input(
-            "Supabase URL",
-            value=current_url,
-            placeholder="https://xxxx.supabase.co",
-            type="default",
-            key="db_url_input",
-        )
-        new_key = st.text_input(
-            "Supabase Anon Key",
-            value=cfg.get("SUPABASE_KEY", ""),
-            placeholder="eyJhbGciOiJIUzI1NiIs...",
-            type="password",
-            key="db_key_input",
-        )
-        if st.button("✅ Connect", use_container_width=True, key="db_connect_btn"):
-            if not new_url or not new_key:
-                st.error("Both URL and Key are required.")
-            else:
-                with st.spinner("Connecting…"):
-                    ok = sql.reconnect(new_url.strip(), new_key.strip()) if sql else False
-                    if not ok:
-                        # Create a fresh SQLEngine with the new creds
-                        from supabase import create_client
-                        try:
-                            from sql_engine import SQLEngine as _SE
-                            new_sql = _SE.__new__(_SE)
-                            new_sql._sb     = create_client(new_url.strip(), new_key.strip())
-                            new_sql._client = genai.Client(api_key=_secret("GEMINI_API_KEY"))
-                            new_sql._ready  = True
-                            st.session_state.sql = new_sql
-                            ok = True
-                        except Exception as e:
-                            st.error(f"Connection failed: {e}")
+        prev = st.session_state.get("active_source_file", "")
+        # Find current index
+        try:
+            cur_idx = ds_names.index(prev) + 1 if prev in ds_names else 0
+        except ValueError:
+            cur_idx = 0
 
-                    if ok:
-                        _save_db_config(new_url.strip(), new_key.strip())
-                        # Clear analytics cache so charts reload from new DB
+        selected_idx = st.selectbox(
+            "Active dataset",
+            range(len(options)),
+            format_func=lambda i: options[i],
+            index=cur_idx,
+            label_visibility="collapsed",
+            key="dataset_selector",
+        )
+
+        new_sf = "" if selected_idx == 0 else ds_names[selected_idx - 1]
+        if new_sf != prev:
+            st.session_state.active_source_file = new_sf
+            st.session_state.pop("analytics_data", None)   # refresh charts
+            st.rerun()
+
+        # Delete dataset button (only when a specific one is selected)
+        if new_sf:
+            if st.button(f"🗑️ Delete '{new_sf}'", use_container_width=True,
+                         key="del_dataset_btn"):
+                with st.spinner("Deleting…"):
+                    if sql.delete_source_file(new_sf):
+                        st.session_state.active_source_file = ""
                         st.session_state.pop("analytics_data", None)
-                        st.success("✅ Connected & saved!")
+                        st.success(f"Deleted '{new_sf}'")
                         st.rerun()
+                    else:
+                        st.error("Delete failed.")
 
     st.divider()
 
@@ -572,18 +552,28 @@ def render_upload_tab(sql: SQLEngine):
     st.divider()
     st.markdown("#### 💾 Import to Database")
 
+    filename = st.session_state.get("upload_filename", "upload")
+    # Strip extension for cleaner dataset name
+    dataset_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+
     mode = st.radio(
         "Import mode",
-        ["🔄 Replace existing data", "➕ Add to existing data"],
-        help="Replace wipes the current table first. Add keeps existing records.",
+        [
+            f"➕ Add as new dataset  (keeps all existing data)",
+            f"🔄 Replace '{dataset_name}'  (removes old version of this file only)",
+            f"🗑️ Replace ALL data  (wipes everything, loads only this file)",
+        ],
+        help="Add: keeps all existing datasets. Replace file: re-imports just this file. Replace all: full reset.",
     )
-    import_mode = "replace" if "Replace" in mode else "append"
 
-    if import_mode == "replace":
-        st.warning(
-            f"⚠️ **Replace mode** will delete all current employees and load "
-            f"{len(clean_df):,} new rows from **{st.session_state.upload_filename}**."
-        )
+    if "Replace ALL" in mode:
+        import_mode = "replace_all"
+        st.warning(f"⚠️ This will delete **all** existing data and load only this file.")
+    elif "Replace" in mode:
+        import_mode = "replace_dataset"
+        st.info(f"ℹ️ Only rows from **'{dataset_name}'** will be replaced.")
+    else:
+        import_mode = "add_new"
 
     col_imp, _ = st.columns([1, 3])
     with col_imp:
@@ -593,27 +583,27 @@ def render_upload_tab(sql: SQLEngine):
         progress = st.progress(0, text="Preparing…")
         try:
             sb = sql._sb
-            progress.progress(10, text="Clearing old data…" if import_mode == "replace" else "Connecting…")
-
-            # Clear analytics cache so charts refresh
+            progress.progress(20, text=f"Processing {len(clean_df):,} rows…")
             st.session_state.pop("analytics_data", None)
 
-            progress.progress(30, text=f"Inserting {len(clean_df):,} rows…")
-            result = dp.insert_to_db(clean_df, sb, mode=import_mode)
+            progress.progress(40, text="Inserting into database…")
+            result = dp.insert_to_db(clean_df, sb,
+                                     mode=import_mode,
+                                     source_file=dataset_name)
             progress.progress(100, text="Done!")
 
             if result["inserted"] > 0:
                 st.success(
-                    f"✅ **{result['inserted']:,} employees imported** successfully!\n\n"
-                    f"Go to the **💬 Chat** tab and ask: *'How many employees are there?'*"
+                    f"✅ **{result['inserted']:,} rows imported** as dataset **'{dataset_name}'**!\n\n"
+                    f"Select it in the **📂 Dataset** panel → ask questions in **💬 Chat**."
                 )
-                # Clear mapping from state so next upload starts fresh
+                st.session_state.active_source_file = dataset_name
                 st.session_state.pop("upload_mapping", None)
                 st.session_state.pop("upload_raw_df", None)
             else:
                 st.error(
-                    f"Import failed — 0 rows inserted.\n\n"
-                    + ("\n".join(result.get("errors", [])))
+                    "Import failed — 0 rows inserted.\n\n"
+                    + "\n".join(result.get("errors", []))
                 )
 
         except Exception as e:
@@ -623,8 +613,9 @@ def render_upload_tab(sql: SQLEngine):
 
 # ── Analytics tab ─────────────────────────────────────────────────────────────
 
-def render_analytics(sql: SQLEngine):
-    st.markdown("### 📊 HR Analytics Dashboard")
+def render_analytics(sql: SQLEngine, source_file: str = ""):
+    label = f"📊 Analytics — {source_file}" if source_file else "📊 HR Analytics Dashboard"
+    st.markdown(f"### {label}")
     if not (sql and sql.ready):
         st.warning("⚠️ Analytics require a live Supabase connection.")
         return
@@ -636,7 +627,7 @@ def render_analytics(sql: SQLEngine):
 
     if "analytics_data" not in st.session_state:
         with st.spinner("Loading analytics data…"):
-            st.session_state.analytics_data = sql.get_analytics_data()
+            st.session_state.analytics_data = sql.get_analytics_data(source_file=source_file)
 
     data = st.session_state.analytics_data
     if not data:
@@ -829,7 +820,8 @@ def main():
 
         # ── Analytics tab ─────────────────────────────────────────────────────
         with tab_analytics:
-            render_analytics(sql)
+            active_sf = st.session_state.get("active_source_file", "")
+            render_analytics(sql, source_file=active_sf)
 
         # ── Upload tab ─────────────────────────────────────────────────────────
         with tab_upload:
@@ -867,9 +859,11 @@ def main():
             with st.chat_message("assistant"):
                 with st.spinner("Thinking…"):
                     try:
+                        active_sf = st.session_state.get("active_source_file", "")
                         response_text, client, sql_rows = chat_with_ai(
                             mm, user_input, sid,
                             rag=rag, sql=sql,
+                            source_file=active_sf,
                         )
                         st.markdown(response_text)
 
