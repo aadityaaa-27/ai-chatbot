@@ -187,21 +187,95 @@ def export_chat(messages: list) -> str:
 
 # Human-readable labels for each analytics key
 _ANALYTICS_LABELS = {
-    "dept_headcount": "Headcount by Department",
-    "dept_attrition": "Attrition Rate by Department (%)",
-    "dept_salary":    "Avg Monthly Salary by Department",
-    "age_groups":     "Headcount by Age Group",
-    "age_salary":     "Avg Monthly Salary by Age Group",
-    "gender":         "Overall Gender Breakdown",
-    "gender_salary":  "Avg Monthly Salary by Gender",
-    "gender_by_dept": "Gender Breakdown by Department",
-    "satisfaction":   "Job Satisfaction Levels",
-    "overtime":       "Overtime Distribution",
-    "education":      "Education Level Distribution",
-    "role_salary":    "Avg Monthly Salary by Job Role (top 15)",
-    "dept_avg_age":   "Avg Age & Salary by Department",
-    "attrition_age":  "Attrition Rate by Age Group",
+    "dept_headcount":    "Headcount by Department",
+    "dept_attrition":    "Attrition Rate by Department (%)",
+    "dept_salary":       "Avg Monthly Salary by Department",
+    "age_groups":        "Headcount by Age Group",
+    "age_salary":        "Avg Monthly Salary by Age Group",
+    "gender":            "Overall Gender Breakdown",
+    "gender_salary":     "Avg Monthly Salary by Gender",
+    "gender_by_dept":    "Gender Breakdown by Department",
+    "satisfaction":      "Job Satisfaction Levels",
+    "overtime":          "Overtime Distribution (Yes/No)",
+    "overtime_by_age":   "Overtime Rate (%) by Age Group",
+    "overtime_by_dept":  "Overtime Rate (%) by Department",
+    "overtime_by_gender":"Overtime Rate (%) by Gender",
+    "education":         "Education Level Distribution",
+    "education_salary":  "Avg Salary by Education Level",
+    "role_salary":       "Avg Monthly Salary by Job Role (top 15)",
+    "salary_by_jobrole": "Avg Monthly Salary by Job Role",
+    "dept_avg_age":      "Avg Age & Salary by Department",
+    "attrition_age":     "Attrition Rate by Age Group",
+    "attrition_by_gender":"Attrition Rate by Gender",
+    "attrition_by_dept": "Attrition Rate by Department",
+    "satisfaction_by_dept":"Avg Job Satisfaction by Department",
 }
+
+# Keyword pairs → analytics key (for chart override matching)
+# First matching rule wins, so order from most specific to least.
+_CHART_KEYWORD_MAP = [
+    (["overtime", "age"],            "overtime_by_age"),
+    (["overtime", "department"],     "overtime_by_dept"),
+    (["overtime", "dept"],           "overtime_by_dept"),
+    (["overtime", "gender"],         "overtime_by_gender"),
+    (["attrition", "age"],           "attrition_age"),
+    (["attrition", "gender"],        "attrition_by_gender"),
+    (["attrition", "department"],    "attrition_by_dept"),
+    (["attrition", "dept"],          "attrition_by_dept"),
+    (["salary", "age"],              "age_salary"),
+    (["paid", "age"],                "age_salary"),
+    (["income", "age"],              "age_salary"),
+    (["earn", "age"],                "age_salary"),
+    (["salary", "gender"],           "gender_salary"),
+    (["paid", "gender"],             "gender_salary"),
+    (["salary", "role"],             "role_salary"),
+    (["salary", "job"],              "role_salary"),
+    (["salary", "education"],        "education_salary"),
+    (["salary", "degree"],           "education_salary"),
+    (["education", "salary"],        "education_salary"),
+    (["satisfaction", "department"], "satisfaction_by_dept"),
+    (["satisfaction", "dept"],       "satisfaction_by_dept"),
+    (["gender", "department"],       "gender_by_dept"),
+    (["gender", "dept"],             "gender_by_dept"),
+    (["age", "department"],          "dept_avg_age"),
+    (["age", "dept"],                "dept_avg_age"),
+    (["headcount", "age"],           "age_groups"),
+    (["employee", "age"],            "age_groups"),
+    (["age", "group"],               "age_groups"),
+]
+
+
+def _find_chart_data(question: str, all_analytics: dict,
+                     sql: SQLEngine, source_file: str) -> list:
+    """
+    Return the best list-of-dicts to use as a chart override.
+    Strategy:
+      1. Match question keywords against _CHART_KEYWORD_MAP → pre-built table
+      2. Fall back to sql.answer() dynamic SQL if no match
+      3. Return [] if nothing chartable is found
+    """
+    q = question.lower()
+
+    # ── 1. Keyword match → pre-built table ────────────────────────────────────
+    for keywords, key in _CHART_KEYWORD_MAP:
+        if all(kw in q for kw in keywords):
+            rows = all_analytics.get(key, [])
+            if rows and len(rows) >= 2:
+                if make_chart(rows) is not None:
+                    return rows
+
+    # ── 2. Dynamic SQL fallback ────────────────────────────────────────────────
+    if sql and sql.ready:
+        try:
+            result = sql.answer(question, source_file=source_file)
+            if not result.get("error") and result.get("data"):
+                rows = result["data"]
+                if len(rows) >= 2 and make_chart(rows) is not None:
+                    return rows
+        except Exception:
+            pass
+
+    return []
 
 
 def ask_about_chart(chart_title: str, chart_rows: list, question: str,
@@ -311,19 +385,13 @@ def _chart_ai(chart_key: str, chart_title: str, rows: list,
                 chart_title, rows, question, source_file,
                 sql=sql, all_analytics=all_analytics,
             )
-            # ── Try to update the chart with query results ─────────────────────
-            if sql and sql.ready:
-                try:
-                    result = sql.answer(question, source_file=source_file)
-                    if not result.get("error") and result.get("data"):
-                        dyn_rows = result["data"]
-                        if len(dyn_rows) >= 2 and make_chart(dyn_rows) is not None:
-                            st.session_state[f"chart_override_{chart_key}"] = {
-                                "rows": dyn_rows,
-                                "question": question,
-                            }
-                except Exception:
-                    pass   # chart stays as original if query fails
+            # ── Chart override: keyword-matched pre-built OR dynamic SQL ──────
+            dyn_rows = _find_chart_data(question, all_analytics, sql, source_file)
+            if dyn_rows:
+                st.session_state[f"chart_override_{chart_key}"] = {
+                    "rows": dyn_rows,
+                    "question": question,
+                }
 
     if ans_key in st.session_state:
         st.markdown(

@@ -438,6 +438,62 @@ Rules:
                 f"/COUNT(*)::numeric,1) as attrition_pct "
                 f"FROM employees {w} GROUP BY 1 ORDER BY attrition_pct DESC"
             ),
+            # ── Overtime breakdowns ───────────────────────────────────────────
+            "overtime_by_age": (
+                f"SELECT CASE "
+                f"WHEN age < 25 THEN 'Under 25' "
+                f"WHEN age BETWEEN 25 AND 34 THEN '25-34' "
+                f"WHEN age BETWEEN 35 AND 44 THEN '35-44' "
+                f"WHEN age BETWEEN 45 AND 54 THEN '45-54' "
+                f"ELSE '55+' END as age_group, "
+                f"ROUND(100.0*SUM(CASE WHEN overtime='Yes' THEN 1 ELSE 0 END)"
+                f"/COUNT(*)::numeric,1) as overtime_pct "
+                f"FROM employees {w} GROUP BY 1 ORDER BY overtime_pct DESC"
+            ),
+            "overtime_by_dept": (
+                f"SELECT department, "
+                f"ROUND(100.0*SUM(CASE WHEN overtime='Yes' THEN 1 ELSE 0 END)"
+                f"/COUNT(*)::numeric,1) as overtime_pct "
+                f"FROM employees {w} GROUP BY department ORDER BY overtime_pct DESC"
+            ),
+            "overtime_by_gender": (
+                f"SELECT gender, "
+                f"ROUND(100.0*SUM(CASE WHEN overtime='Yes' THEN 1 ELSE 0 END)"
+                f"/COUNT(*)::numeric,1) as overtime_pct "
+                f"FROM employees {w} GROUP BY gender ORDER BY overtime_pct DESC"
+            ),
+            # ── Other useful breakdowns ───────────────────────────────────────
+            "attrition_by_gender": (
+                f"SELECT gender, "
+                f"ROUND(100.0*SUM(CASE WHEN attrition='Yes' THEN 1 ELSE 0 END)"
+                f"/COUNT(*)::numeric,1) as attrition_pct "
+                f"FROM employees {w} GROUP BY gender ORDER BY attrition_pct DESC"
+            ),
+            "attrition_by_dept": (
+                f"SELECT department, "
+                f"ROUND(100.0*SUM(CASE WHEN attrition='Yes' THEN 1 ELSE 0 END)"
+                f"/COUNT(*)::numeric,1) as attrition_pct "
+                f"FROM employees {w} GROUP BY department ORDER BY attrition_pct DESC"
+            ),
+            "education_salary": (
+                f"SELECT CASE education "
+                f"WHEN 1 THEN 'Below College' WHEN 2 THEN 'College' "
+                f"WHEN 3 THEN 'Bachelor' WHEN 4 THEN 'Master' WHEN 5 THEN 'Doctor' "
+                f"END as education_level, "
+                f"ROUND(AVG(monthly_income)::numeric,0) as avg_salary, "
+                f"COUNT(*) as employees "
+                f"FROM employees {w} GROUP BY 1, education ORDER BY education"
+            ),
+            "satisfaction_by_dept": (
+                f"SELECT department, "
+                f"ROUND(AVG(job_satisfaction)::numeric,2) as avg_satisfaction "
+                f"FROM employees {w} GROUP BY department ORDER BY avg_satisfaction DESC"
+            ),
+            "salary_by_jobrole": (
+                f"SELECT job_role, "
+                f"ROUND(AVG(monthly_income)::numeric,0) as avg_salary "
+                f"FROM employees {w} GROUP BY job_role ORDER BY avg_salary DESC LIMIT 15"
+            ),
         }
         results = {}
         for key, sql in queries.items():
