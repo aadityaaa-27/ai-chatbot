@@ -273,10 +273,13 @@ NOT like this: "Col Name": "null"
           'replace_all'      — delete ALL rows, then insert
         source_file: filename tag stored in each row so datasets stay separate.
         """
-        # Tag every row with the source_file name
         safe_name = source_file.replace("'", "''")
         df = df.copy()
-        df["source_file"] = source_file
+        # Do NOT add source_file to the DataFrame for REST insert —
+        # PostgREST schema cache may not know about the new column yet (PGRST204).
+        # We tag rows via an RPC UPDATE after insert instead.
+        if "source_file" in df.columns:
+            df = df.drop(columns=["source_file"])
 
         if mode == "replace_all":
             try:
@@ -318,11 +321,33 @@ NOT like this: "Col Name": "null"
                 failed += len(batch)
                 errors.append(str(e)[:120])
 
+        # Tag all newly-inserted rows (source_file IS NULL) with the filename.
+        # This uses RPC so it bypasses PostgREST schema-cache restrictions.
+        if inserted > 0:
+            try:
+                sb_client.rpc(
+                    "run_employee_query",
+                    {"query_sql":
+                        f"UPDATE employees SET source_file = '{safe_name}' "
+                        f"WHERE source_file IS NULL"}
+                ).execute()
+            except Exception as e:
+                print(f"[DataProcessor] source_file tag failed: {e}")
+
+            # Tell PostgREST to reload schema cache for future inserts
+            try:
+                sb_client.rpc(
+                    "run_employee_query",
+                    {"query_sql": "NOTIFY pgrst, 'reload schema'"}
+                ).execute()
+            except Exception:
+                pass  # non-critical
+
         return {
             "inserted": inserted,
             "failed":   failed,
             "total":    len(records),
-            "errors":   errors[:3],   # return first 3 error messages only
+            "errors":   errors[:3],
         }
 
     # ── Full pipeline (convenience) ───────────────────────────────────────────

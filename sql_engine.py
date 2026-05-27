@@ -93,6 +93,11 @@ class SQLEngine:
                 "ALTER TABLE employees "
                 "ADD COLUMN IF NOT EXISTS source_file TEXT DEFAULT 'original'"
             )
+            # Reload PostgREST schema cache so REST inserts see the new column
+            try:
+                self._run("NOTIFY pgrst, 'reload schema'")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[SQL] init failed: {e}")
 
