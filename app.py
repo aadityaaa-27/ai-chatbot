@@ -92,6 +92,14 @@ hr { border-color: #1a1a1a !important; margin: 0.5rem 0 !important; }
     box-shadow: 0 0 0 1px #1a73e8 !important;
 }
 
+/* Per-chart AI answer bubble */
+.chart-ai-ans {
+    background: #0a1a0a; border: 1px solid #1a3a1a;
+    border-radius: 8px; padding: 9px 13px;
+    font-size: 0.80rem; color: #b8d8b8;
+    margin-top: 4px; line-height: 1.55;
+}
+
 /* Tighten tab font */
 [data-testid="stTabs"] button { font-size: 0.84rem !important; }
 </style>
@@ -173,6 +181,63 @@ def export_chat(messages: list) -> str:
         role = "You" if m["role"] == "user" else "AI"
         lines.append(f"[{role}]\n{m['content']}\n")
     return "\n---\n".join(lines)
+
+
+# ── Per-chart AI helpers ──────────────────────────────────────────────────────
+
+def ask_about_chart(chart_title: str, rows: list, question: str,
+                    source_file: str = "") -> str:
+    """Ask Gemini a question about a specific chart's data."""
+    if not rows:
+        return "No data available for this chart."
+    tbl    = pd.DataFrame(rows).to_string(index=False)
+    sf_ctx = f"Dataset: {source_file}" if source_file else "Dataset: all data combined"
+    prompt = (
+        f"You are an expert HR analyst. Answer the question below about this chart.\n\n"
+        f"Chart: {chart_title}\n{sf_ctx}\n\n"
+        f"Data:\n{tbl}\n\n"
+        f"Question: {question}\n\n"
+        "Rules:\n"
+        "- Answer directly and concisely using the numbers from the data above.\n"
+        "- Highlight patterns, outliers, or actionable insights where relevant.\n"
+        "- No markdown headers, no code snippets — plain English, 1–3 sentences."
+    )
+    r = _make_client().models.generate_content(
+        model="gemini-2.0-flash", contents=prompt
+    )
+    return r.text.strip()
+
+
+def _chart_ai(chart_key: str, chart_title: str, rows: list, source_file: str = ""):
+    """Render a sticky mini-chat widget below a chart (form + answer)."""
+    ans_key = f"ca_{chart_key}"
+
+    with st.form(key=f"cf_{chart_key}", clear_on_submit=True, border=False):
+        col_q, col_b = st.columns([6, 1])
+        with col_q:
+            question = st.text_input(
+                "q", placeholder="Ask about this chart…",
+                label_visibility="collapsed",
+                key=f"ci_{chart_key}",
+            )
+        with col_b:
+            ask = st.form_submit_button("Ask ✨", use_container_width=True)
+
+    if ask and question.strip():
+        with st.spinner("Analysing…"):
+            st.session_state[ans_key] = ask_about_chart(
+                chart_title, rows, question, source_file
+            )
+
+    if ans_key in st.session_state:
+        st.markdown(
+            f'<div class="chart-ai-ans">🤖 {st.session_state[ans_key]}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("✕ clear", key=f"clr_{chart_key}",
+                     type="secondary", use_container_width=False):
+            del st.session_state[ans_key]
+            st.rerun()
 
 
 # ── Gemini helpers ────────────────────────────────────────────────────────────
@@ -699,6 +764,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                               "👥 Employees by Department"),
                 use_container_width=True,
             )
+            _chart_ai("dept_headcount", "Employees by Department", rows, source_file)
     with c2:
         rows = data.get("dept_attrition", [])
         if rows:
@@ -708,6 +774,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                               "📉 Attrition Rate by Department (%)", "Reds"),
                 use_container_width=True,
             )
+            _chart_ai("dept_attrition", "Attrition Rate % by Department", rows, source_file)
 
     # ── Row 2: Salary + Age groups ────────────────────────────────────────────
     c3, c4 = st.columns(2)
@@ -720,6 +787,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                               "💰 Avg Monthly Salary by Department ($)", "Greens"),
                 use_container_width=True,
             )
+            _chart_ai("dept_salary", "Avg Monthly Salary by Department", rows, source_file)
     with c4:
         rows = data.get("age_groups", [])
         if rows:
@@ -733,6 +801,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             )
             fig.update_layout(**_DARK)
             st.plotly_chart(fig, use_container_width=True)
+            _chart_ai("age_groups", "Age Distribution of Employees", rows, source_file)
 
     # ── Row 3: Gender + Job Satisfaction ─────────────────────────────────────
     c5, c6 = st.columns(2)
@@ -744,6 +813,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                 analytics_pie(df, "gender", "employees", "⚧ Gender Breakdown"),
                 use_container_width=True,
             )
+            _chart_ai("gender", "Gender Breakdown", rows, source_file)
     with c6:
         rows = data.get("satisfaction", [])
         if rows:
@@ -759,6 +829,9 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             )
             fig.update_layout(**_DARK)
             st.plotly_chart(fig, use_container_width=True)
+            # Pass label-mapped df so AI sees "Low/Medium/High" not raw numbers
+            _chart_ai("satisfaction", "Job Satisfaction Distribution",
+                      df.to_dict(orient="records"), source_file)
 
     # ── Row 4: Overtime + Education ───────────────────────────────────────────
     c7, c8 = st.columns(2)
@@ -770,6 +843,7 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
                 analytics_pie(df, "overtime", "employees", "⏰ Overtime Distribution"),
                 use_container_width=True,
             )
+            _chart_ai("overtime", "Overtime Distribution", rows, source_file)
     with c8:
         rows = data.get("education", [])
         if rows:
@@ -786,6 +860,9 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             )
             fig.update_layout(**_DARK)
             st.plotly_chart(fig, use_container_width=True)
+            # Pass label-mapped df so AI sees "Bachelor/Master/Doctor" not 1-5
+            _chart_ai("education", "Education Level Distribution",
+                      df.to_dict(orient="records"), source_file)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
