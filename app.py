@@ -1392,7 +1392,19 @@ def render_left(mm: MemoryManager):
         unsafe_allow_html=True,
     )
 
-    # ── Header ────────────────────────────────────────────────────────────────
+    # ── Super-admin gets a minimal sidebar — no chatbot elements ─────────────
+    if user_role == "super_admin":
+        st.markdown("## 🌐 Platform Admin")
+        st.caption("Manage companies, admins, and invite links from the panel on the right.")
+        st.divider()
+        if st.button("🚪 Sign Out", use_container_width=True, type="secondary"):
+            for _k in ["logged_in", "user", "user_role", "user_dept", "user_name",
+                       "analytics_data", "active_source_file"]:
+                st.session_state.pop(_k, None)
+            st.rerun()
+        return   # nothing else needed in sidebar for super_admin
+
+    # ── Header (non-super_admin only) ─────────────────────────────────────────
     st.markdown("## 🤖 AI Chatbot")
     if sql and sql.ready:
         st.markdown('<span class="status-ok">● Connected</span> · Gemini 2.0 Flash',
