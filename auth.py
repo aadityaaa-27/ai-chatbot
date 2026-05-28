@@ -200,13 +200,22 @@ def ensure_super_admin(sb) -> bool:
 # ── Company management (super_admin only) ─────────────────────────────────────
 
 def get_all_companies(sb) -> list:
+    # Try direct PostgREST table API first (works once schema cache is warm)
+    try:
+        res = sb.table("companies").select("id, name, slug, created_at").order("id").execute()
+        if res.data is not None:
+            return res.data
+    except Exception as e:
+        print(f"[Auth] get_all_companies (direct) error: {e}")
+
+    # Fallback: run via RPC
     try:
         res = sb.rpc("run_employee_query", {
             "query_sql": "SELECT id, name, slug, created_at FROM companies ORDER BY id"
         }).execute()
         return res.data or []
     except Exception as e:
-        print(f"[Auth] get_all_companies error: {e}")
+        print(f"[Auth] get_all_companies (rpc) error: {e}")
         return []
 
 

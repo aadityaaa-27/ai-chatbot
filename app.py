@@ -1181,6 +1181,12 @@ def render_admin_tab(sql: SQLEngine):
             st.dataframe(pd.DataFrame(companies), use_container_width=True, hide_index=True)
         else:
             st.info("No companies yet.")
+            # Debug — check if the table exists and is accessible at all
+            try:
+                raw = sb.table("companies").select("id").limit(1).execute()
+                st.caption(f"🔍 Debug: direct table ping → {raw.data}")
+            except Exception as _e:
+                st.caption(f"🔍 Debug: direct table ping failed → {_e}")
 
         st.divider()
 
