@@ -1,14 +1,14 @@
 """
-Email Service — OTP delivery via Outlook / Office 365 SMTP.
-Reads SMTP_EMAIL and SMTP_PASSWORD from environment / .env.
+Email Service — OTP delivery via Resend API.
+Reads RESEND_API_KEY and SMTP_EMAIL (used as 'from' address) from .env.
 """
 
 import os
 import random
 import hashlib
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import urllib.request
+import urllib.error
+import json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -17,13 +17,13 @@ _ENV = _DIR / ".env"
 
 
 def _load_env():
-    if not os.environ.get("SMTP_EMAIL"):
+    if not os.environ.get("RESEND_API_KEY"):
         try:
             from dotenv import load_dotenv
             load_dotenv(dotenv_path=_ENV, override=True)
         except Exception:
             pass
-    if not os.environ.get("SMTP_EMAIL"):
+    if not os.environ.get("RESEND_API_KEY"):
         try:
             with open(_ENV, "r", encoding="utf-8") as f:
                 for line in f:
@@ -44,18 +44,16 @@ def generate_otp() -> str:
 
 
 def send_otp_email(to_email: str, otp: str, company_name: str) -> tuple[bool, str]:
-    """
-    Send OTP via Gmail SMTP.
-    Returns (success, error_message).
-    """
+    """Send OTP via Resend API. Returns (success, error_message)."""
     _load_env()
-    smtp_email = os.environ.get("SMTP_EMAIL", "").strip()
-    smtp_pass  = os.environ.get("SMTP_PASSWORD", "").strip()
+    api_key    = os.environ.get("RESEND_API_KEY", "").strip()
+    from_email = os.environ.get("SMTP_EMAIL", "").strip()
 
-    if not smtp_email or not smtp_pass:
-        return False, "SMTP_EMAIL or SMTP_PASSWORD not configured in .env"
+    if not api_key:
+        return False, "RESEND_API_KEY not set in .env"
+    if not from_email:
+        return False, "SMTP_EMAIL (sender address) not set in .env"
 
-    subject = f"Your verification code for HR Analytics — {otp}"
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:32px;
                 background:#0f0f1a;border-radius:12px;color:#e2e8f0;">
@@ -63,17 +61,14 @@ def send_otp_email(to_email: str, otp: str, company_name: str) -> tuple[bool, st
                  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
                  margin:0 0 8px;">HR Analytics Platform</h2>
       <p style="color:#94a3b8;margin:0 0 24px;">Company registration verification</p>
-
       <p>Hi there,</p>
-      <p>You requested to register <strong>{company_name}</strong> on the HR Analytics platform.
-         Use the code below to complete your registration:</p>
-
+      <p>You requested to register <strong>{company_name}</strong> on the HR Analytics
+         platform. Use the code below to complete your registration:</p>
       <div style="background:#1e1e2e;border-radius:10px;padding:24px;text-align:center;
                   margin:24px 0;border:1px solid #2a2a3d;">
         <span style="font-size:40px;font-weight:700;letter-spacing:12px;
                      color:#6eb6ff;">{otp}</span>
       </div>
-
       <p style="color:#94a3b8;font-size:13px;">
         This code expires in <strong>10 minutes</strong>.<br>
         If you didn't request this, ignore this email.
@@ -81,27 +76,40 @@ def send_otp_email(to_email: str, otp: str, company_name: str) -> tuple[bool, st
     </div>
     """
 
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = smtp_email
-        msg["To"]      = to_email
-        msg.attach(MIMEText(html, "html"))
+    payload = json.dumps({
+        "from":    f"HR Platform <{from_email}>",
+        "to":      [to_email],
+        "subject": f"Your verification code: {otp}",
+        "html":    html,
+    }).encode("utf-8")
 
-        # Outlook / Office 365 — STARTTLS on port 587
-        with smtplib.SMTP("smtp.office365.com", 587, timeout=10) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(smtp_email, smtp_pass)
-            server.sendmail(smtp_email, to_email, msg.as_string())
-        return True, ""
-    except smtplib.SMTPAuthenticationError:
-        return False, (
-            "Outlook authentication failed — check SMTP_EMAIL and SMTP_PASSWORD. "
-            "If your org uses MFA, ask IT to enable SMTP AUTH for your account, "
-            "or generate an app password in your Microsoft account security settings."
-        )
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status in (200, 201):
+                return True, ""
+            body = resp.read().decode()
+            return False, f"Resend API error {resp.status}: {body}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        try:
+            msg = json.loads(body).get("message", body)
+        except Exception:
+            msg = body
+        if e.code == 401:
+            return False, "Invalid RESEND_API_KEY — check your key at resend.com"
+        if e.code == 422:
+            return False, f"Resend rejected the request: {msg}"
+        return False, f"Resend API error {e.code}: {msg}"
     except Exception as e:
         return False, str(e)
 
@@ -110,16 +118,15 @@ def send_otp_email(to_email: str, otp: str, company_name: str) -> tuple[bool, st
 
 def store_otp(sb, email: str, otp: str, company_name: str,
               admin_name: str) -> tuple[bool, str]:
-    """Store hashed OTP in otp_requests table. Returns (success, error)."""
+    """Store hashed OTP in otp_requests table."""
     try:
-        # Invalidate any previous unused OTPs for this email
+        safe_email = email.replace("'", "''")
         sb.rpc("run_employee_write", {"query_sql":
             f"UPDATE otp_requests SET used = TRUE "
-            f"WHERE email = '{email.replace(chr(39), chr(39)*2)}' AND used = FALSE"
+            f"WHERE email = '{safe_email}' AND used = FALSE"
         }).execute()
 
-        expires = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
-        safe_email   = email.replace("'", "''")
+        expires      = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
         safe_company = company_name.replace("'", "''")
         safe_name    = admin_name.replace("'", "''")
         otp_h        = _hash_otp(otp)
@@ -134,10 +141,7 @@ def store_otp(sb, email: str, otp: str, company_name: str,
 
 
 def verify_otp(sb, email: str, otp: str) -> tuple[bool, str, dict]:
-    """
-    Check OTP. Returns (valid, error_message, request_data).
-    On success marks the OTP as used.
-    """
+    """Verify OTP, mark as used on success."""
     try:
         safe_email = email.replace("'", "''")
         otp_h      = _hash_otp(otp)
@@ -149,17 +153,16 @@ def verify_otp(sb, email: str, otp: str) -> tuple[bool, str, dict]:
         }).execute()
 
         if not res.data:
-            return False, "Invalid OTP — please check the code and try again.", {}
+            return False, "Invalid code — please check and try again.", {}
 
         row = res.data[0]
         if row["used"]:
-            return False, "This OTP has already been used. Request a new one.", {}
+            return False, "This code has already been used. Request a new one.", {}
 
         expiry = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
         if datetime.now(timezone.utc) > expiry:
-            return False, "OTP has expired. Please request a new code.", {}
+            return False, "Code has expired. Please request a new one.", {}
 
-        # Mark used
         sb.rpc("run_employee_write", {"query_sql":
             f"UPDATE otp_requests SET used = TRUE WHERE id = {row['id']}"
         }).execute()
