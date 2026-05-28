@@ -858,78 +858,222 @@ def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str
 
 # ── Login page ────────────────────────────────────────────────────────────────
 
+def _get_sb(sql: SQLEngine):
+    """Return a live Supabase client, preferring the already-open sql connection."""
+    if sql and sql.ready and sql._sb:
+        return sql._sb
+    return get_auth_client()
+
+
 def show_login_page(sql: SQLEngine):
-    """Full-screen login form — uses its own Supabase client, never depends on SQLEngine."""
+    """Login + company self-registration via email OTP."""
+    from email_service import (generate_otp, send_otp_email,
+                                store_otp, verify_otp as _verify_otp)
+
     _, col, _ = st.columns([1, 1.3, 1])
     with col:
         st.markdown("""
         <div class="login-card">
           <div class="login-logo">🤖</div>
           <div class="login-title">AI HR Platform</div>
-          <div class="login-sub">Sign in with your credentials to continue</div>
+          <div class="login-sub">Sign in or register your company</div>
         </div>
         """, unsafe_allow_html=True)
-
         st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
-        with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("Username", placeholder="Enter username")
-            password = st.text_input("Password", type="password",
-                                     placeholder="Enter password")
-            submitted = st.form_submit_button(
-                "Sign In →", type="primary", use_container_width=True
-            )
+        # ── Tab: Sign In / Register ───────────────────────────────────────────
+        login_tab, reg_tab = st.tabs(["Sign In", "Register Company"])
 
-        if submitted:
-            if not username.strip() or not password:
-                st.error("Please enter both username and password.")
-                return
+        # ════════════════════════════════════════════════════════════════════════
+        # TAB 1 — Sign In
+        # ════════════════════════════════════════════════════════════════════════
+        with login_tab:
+            with st.form("login_form", clear_on_submit=False):
+                username  = st.text_input("Username", placeholder="Enter username")
+                password  = st.text_input("Password", type="password",
+                                          placeholder="Enter password")
+                submitted = st.form_submit_button(
+                    "Sign In →", type="primary", use_container_width=True
+                )
 
-            with st.spinner("Signing in…"):
-                # ── Get a Supabase client (auth doesn't need Gemini) ──────────
-                sb = None
-                if sql and sql.ready and sql._sb:
-                    sb = sql._sb          # reuse existing connection
-                if sb is None:
-                    sb = get_auth_client()  # direct connection from .env
-
-                if sb is None:
-                    st.error(
-                        "Cannot reach the database. Check that `SUPABASE_URL` "
-                        "and `SUPABASE_KEY` are set in your `.env` file."
-                    )
+            if submitted:
+                if not username.strip() or not password:
+                    st.error("Please enter both username and password.")
                     return
 
-                # ── Ensure platform super_admin exists (non-fatal) ────────────
-                try:
-                    ensure_super_admin(sb)
-                except Exception:
-                    pass
+                with st.spinner("Signing in…"):
+                    sb = _get_sb(sql)
+                    if sb is None:
+                        st.error("Cannot reach the database. Check Supabase credentials.")
+                        return
+                    try:
+                        ensure_super_admin(sb)
+                    except Exception:
+                        pass
+                    user = authenticate(sb, username.strip(), password)
 
-                # ── Authenticate ──────────────────────────────────────────────
-                user = authenticate(sb, username.strip(), password)
+                if user:
+                    st.session_state["logged_in"]       = True
+                    st.session_state["user"]            = user
+                    st.session_state["user_role"]       = user["role"]
+                    st.session_state["user_dept"]       = user.get("department")
+                    st.session_state["user_name"]       = user.get("full_name", username)
+                    st.session_state["user_company_id"] = user.get("company_id")
+                    st.rerun()
+                else:
+                    st.error("Incorrect username or password.")
 
-            if user:
-                st.session_state["logged_in"]       = True
-                st.session_state["user"]            = user
-                st.session_state["user_role"]       = user["role"]
-                st.session_state["user_dept"]       = user.get("department")
-                st.session_state["user_name"]       = user.get("full_name", username)
-                st.session_state["user_company_id"] = user.get("company_id")
-                st.rerun()
-            else:
-                st.error("Incorrect username or password.")
+        # ════════════════════════════════════════════════════════════════════════
+        # TAB 2 — Register Company (Email OTP flow)
+        # ════════════════════════════════════════════════════════════════════════
+        with reg_tab:
+            reg_step = st.session_state.get("reg_step", "form")  # form | otp | setup
 
-        with st.expander("👁️ Demo credentials"):
-            st.markdown("""
-| Username | Password | Role |
-|----------|----------|------|
-| admin | admin123 | 👑 Admin |
-| hr_manager | hr123 | 🧑‍💼 HR Manager |
-| payroll_user | payroll123 | 💰 Payroll |
-| sales_head | sales123 | 🏢 Sales Manager |
-| tech_head | tech123 | 🏢 Tech Manager |
-""")
+            # ── Step 1: Enter company details → send OTP ──────────────────────
+            if reg_step == "form":
+                with st.form("reg_form", clear_on_submit=False):
+                    r_company = st.text_input("Company Name *", placeholder="Acme Corp")
+                    r_name    = st.text_input("Your Full Name *", placeholder="Jane Smith")
+                    r_email   = st.text_input("Work Email *", placeholder="jane@acme.com")
+                    r_submit  = st.form_submit_button(
+                        "Send Verification Code →", type="primary", use_container_width=True
+                    )
+
+                if r_submit:
+                    if not r_company.strip() or not r_name.strip() or not r_email.strip():
+                        st.error("All fields are required.")
+                    elif "@" not in r_email or "." not in r_email.split("@")[-1]:
+                        st.error("Please enter a valid email address.")
+                    else:
+                        with st.spinner("Sending verification code…"):
+                            sb  = _get_sb(sql)
+                            otp = generate_otp()
+                            ok_store, err_store = store_otp(
+                                sb, r_email.strip(), otp,
+                                r_company.strip(), r_name.strip()
+                            )
+                            if not ok_store:
+                                st.error(f"Could not save OTP: {err_store}")
+                            else:
+                                ok_send, err_send = send_otp_email(
+                                    r_email.strip(), otp, r_company.strip()
+                                )
+                                if ok_send:
+                                    st.session_state["reg_step"]  = "otp"
+                                    st.session_state["reg_email"] = r_email.strip()
+                                    st.rerun()
+                                else:
+                                    st.error(f"Email failed: {err_send}")
+
+            # ── Step 2: Enter OTP ─────────────────────────────────────────────
+            elif reg_step == "otp":
+                reg_email = st.session_state.get("reg_email", "")
+                st.info(f"A 6-digit code was sent to **{reg_email}**. Check your inbox (and spam).")
+                with st.form("otp_form", clear_on_submit=True):
+                    entered_otp = st.text_input("Enter verification code",
+                                                placeholder="123456", max_chars=6)
+                    otp_submit  = st.form_submit_button(
+                        "Verify →", type="primary", use_container_width=True
+                    )
+                if otp_submit:
+                    if len(entered_otp.strip()) != 6:
+                        st.error("Please enter the full 6-digit code.")
+                    else:
+                        sb = _get_sb(sql)
+                        valid, err, req_data = _verify_otp(sb, reg_email, entered_otp.strip())
+                        if valid:
+                            st.session_state["reg_step"]     = "setup"
+                            st.session_state["reg_data"]     = req_data
+                            st.rerun()
+                        else:
+                            st.error(err)
+
+                if st.button("← Back / use different email", use_container_width=True):
+                    st.session_state.pop("reg_step", None)
+                    st.session_state.pop("reg_email", None)
+                    st.rerun()
+
+                if st.button("Resend code", use_container_width=True):
+                    reg_email = st.session_state.get("reg_email", "")
+                    sb  = _get_sb(sql)
+                    # Re-fetch the request data from the unused OTP
+                    res = sb.rpc("run_employee_query", {"query_sql":
+                        f"SELECT company_name, admin_name FROM otp_requests "
+                        f"WHERE email = '{reg_email.replace(chr(39), chr(39)*2)}' "
+                        f"AND used = FALSE ORDER BY created_at DESC LIMIT 1"
+                    }).execute()
+                    if res.data:
+                        row = res.data[0]
+                        otp = generate_otp()
+                        store_otp(sb, reg_email, otp, row["company_name"], row["admin_name"])
+                        ok_send, err_send = send_otp_email(reg_email, otp, row["company_name"])
+                        if ok_send:
+                            st.success("New code sent!")
+                        else:
+                            st.error(f"Email failed: {err_send}")
+
+            # ── Step 3: Set username + password, create company + admin ───────
+            elif reg_step == "setup":
+                req_data = st.session_state.get("reg_data", {})
+                st.success(f"Email verified! Set up your account for **{req_data.get('company_name')}**.")
+                with st.form("setup_form", clear_on_submit=False):
+                    s_username = st.text_input("Choose a Username *",
+                                               placeholder="e.g. jane_acme")
+                    s_password = st.text_input("Set Password * (min 6 chars)",
+                                               type="password")
+                    s_confirm  = st.text_input("Confirm Password *", type="password")
+                    s_submit   = st.form_submit_button(
+                        "Create My Company Account →", type="primary",
+                        use_container_width=True
+                    )
+
+                if s_submit:
+                    if not s_username.strip():
+                        st.error("Username cannot be empty.")
+                    elif len(s_password) < 6:
+                        st.error("Password must be at least 6 characters.")
+                    elif s_password != s_confirm:
+                        st.error("Passwords do not match.")
+                    else:
+                        with st.spinner("Creating your company…"):
+                            sb = _get_sb(sql)
+                            ok_co, err_co, cid = create_company(
+                                sb,
+                                req_data.get("company_name", ""),
+                                req_data.get("company_name", "").lower().replace(" ", "-")
+                            )
+                            if not ok_co:
+                                # Slug collision — append timestamp
+                                import time
+                                slug = req_data.get("company_name","").lower().replace(" ","-")
+                                slug = f"{slug}-{int(time.time()) % 10000}"
+                                ok_co, err_co, cid = create_company(
+                                    sb, req_data.get("company_name", ""), slug
+                                )
+                            if ok_co and cid:
+                                ok_u, err_u = create_user(
+                                    sb,
+                                    username=s_username.strip(),
+                                    password=s_password,
+                                    role="admin",
+                                    department=None,
+                                    full_name=req_data.get("admin_name", ""),
+                                    company_id=cid,
+                                    email=req_data.get("email", ""),
+                                )
+                                if ok_u:
+                                    # Clear registration state
+                                    for k in ["reg_step", "reg_email", "reg_data"]:
+                                        st.session_state.pop(k, None)
+                                    st.success(
+                                        f"Company **{req_data['company_name']}** created! "
+                                        f"You can now sign in with username `{s_username.strip()}`."
+                                    )
+                                    st.rerun()
+                                else:
+                                    st.error(f"Account creation failed: {err_u}")
+                            else:
+                                st.error(f"Company creation failed: {err_co}")
 
 
 # ── Admin panel ───────────────────────────────────────────────────────────────

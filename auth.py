@@ -267,7 +267,7 @@ def get_all_users(sb, company_id: Optional[int] = None) -> list:
 
 def create_user(sb, username: str, password: str, role: str,
                 department: Optional[str], full_name: str,
-                company_id: int) -> tuple[bool, str]:
+                company_id: int, email: str = "") -> tuple[bool, str]:
     """Returns (success, error_message)."""
     if not username.strip():
         return False, "Username cannot be empty"
@@ -278,14 +278,17 @@ def create_user(sb, username: str, password: str, role: str,
     if role == "super_admin":
         return False, "Cannot create super_admin via this form"
     try:
-        sb.table("app_users").insert({
+        row = {
             "username":      username.strip(),
             "password_hash": _hash(password),
             "role":          role,
             "department":    department.strip() if department else None,
             "full_name":     full_name.strip(),
             "company_id":    company_id,
-        }).execute()
+        }
+        if email:
+            row["email"] = email.strip().lower()
+        sb.table("app_users").insert(row).execute()
         return True, ""
     except Exception as e:
         msg = str(e)
