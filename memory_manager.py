@@ -1,85 +1,169 @@
-import json
 import re
 import uuid
-from pathlib import Path
 from datetime import datetime
-
-DATA_DIR     = Path("data")
-MEMORY_FILE  = DATA_DIR / "user_memory.json"
-HISTORY_FILE = DATA_DIR / "chat_history.json"
-SESSIONS_FILE = DATA_DIR / "sessions.json"
 
 
 class MemoryManager:
-    def __init__(self):
-        DATA_DIR.mkdir(exist_ok=True)
-        self.memory   = self._load(MEMORY_FILE,  {"user_facts": {}})
-        self.history  = self._load(HISTORY_FILE, [])
-        self.sessions = self._load(SESSIONS_FILE, {})
+    """
+    Persistent chat memory backed by Supabase.
+    Requires setup_memory.sql to have been run once in Supabase.
+    Falls back to in-memory-only mode if the tables are missing.
+    """
 
-    def _load(self, path: Path, default):
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return default
+    def __init__(self, user_id: int):
+        from rag_engine import _secret
+        self._user_id = user_id
+        self._sb = None
+        self._db_ready = False
+        self._sessions: dict = {}
+        self._history: list = []
+        self._facts: dict = {}
 
-    def _save(self, path: Path, data):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        url = _secret("SUPABASE_URL")
+        key = _secret("SUPABASE_KEY")
+        if url and key:
+            try:
+                from supabase import create_client
+                self._sb = create_client(url, key)
+                self._db_ready = self._check_tables()
+            except Exception as e:
+                print(f"[Memory] Supabase init failed: {e}")
 
-    def save_memory(self):   self._save(MEMORY_FILE,   self.memory)
-    def save_history(self):  self._save(HISTORY_FILE,  self.history)
-    def save_sessions(self): self._save(SESSIONS_FILE, self.sessions)
+        if self._db_ready:
+            self._load_from_db()
+
+    # ── DB connectivity ───────────────────────────────────────────────────────
+
+    def _check_tables(self) -> bool:
+        try:
+            self._sb.table("chat_sessions").select("id").limit(1).execute()
+            return True
+        except Exception:
+            print("[Memory] chat_sessions table not found — run setup_memory.sql in Supabase.")
+            return False
+
+    def _load_from_db(self):
+        try:
+            res = self._sb.table("chat_sessions").select(
+                "id, title, msg_count, created_at"
+            ).eq("user_id", self._user_id).order("created_at", desc=True).limit(100).execute()
+            for row in (res.data or []):
+                self._sessions[row["id"]] = {
+                    "id":         row["id"],
+                    "title":      row["title"],
+                    "created_at": row["created_at"],
+                    "msg_count":  row["msg_count"],
+                }
+        except Exception as e:
+            print(f"[Memory] load sessions error: {e}")
+
+        try:
+            res = self._sb.table("chat_messages").select(
+                "session_id, role, content, created_at"
+            ).eq("user_id", self._user_id).order("created_at").limit(500).execute()
+            for row in (res.data or []):
+                self._history.append({
+                    "role":       row["role"],
+                    "content":    row["content"],
+                    "timestamp":  row["created_at"],
+                    "session_id": row["session_id"],
+                })
+        except Exception as e:
+            print(f"[Memory] load messages error: {e}")
+
+        try:
+            res = self._sb.table("user_facts").select(
+                "key, value"
+            ).eq("user_id", self._user_id).execute()
+            for row in (res.data or []):
+                self._facts[row["key"]] = row["value"]
+        except Exception as e:
+            print(f"[Memory] load facts error: {e}")
 
     # ── Sessions ──────────────────────────────────────────────────────────────
 
     def new_session(self) -> str:
         sid = uuid.uuid4().hex[:8]
-        self.sessions[sid] = {
+        now = datetime.utcnow().isoformat()
+        session = {
             "id":         sid,
             "title":      "New Chat",
-            "created_at": datetime.now().isoformat(),
+            "created_at": now,
             "msg_count":  0,
         }
-        self.save_sessions()
+        self._sessions[sid] = session
+        if self._db_ready:
+            try:
+                self._sb.table("chat_sessions").insert({
+                    "id":       sid,
+                    "user_id":  self._user_id,
+                    "title":    "New Chat",
+                    "created_at": now,
+                }).execute()
+            except Exception as e:
+                print(f"[Memory] new_session DB error: {e}")
         return sid
 
     def set_session_title(self, sid: str, title: str):
-        if sid in self.sessions:
-            self.sessions[sid]["title"] = title
-            self.save_sessions()
+        if sid in self._sessions:
+            self._sessions[sid]["title"] = title
+            if self._db_ready:
+                try:
+                    self._sb.table("chat_sessions").update(
+                        {"title": title}
+                    ).eq("id", sid).eq("user_id", self._user_id).execute()
+                except Exception as e:
+                    print(f"[Memory] set_session_title DB error: {e}")
 
     def get_sessions(self) -> list:
         """All sessions newest-first."""
-        return sorted(self.sessions.values(), key=lambda s: s["created_at"], reverse=True)
+        return sorted(self._sessions.values(), key=lambda s: s["created_at"], reverse=True)
 
     def get_session_messages(self, sid: str) -> list:
-        return [m for m in self.history if m.get("session_id") == sid]
+        return [m for m in self._history if m.get("session_id") == sid]
 
     # ── Messages ──────────────────────────────────────────────────────────────
 
     def add_message(self, role: str, content: str, session_id: str = ""):
-        self.history.append({
+        now = datetime.utcnow().isoformat()
+        msg = {
             "role":       role,
             "content":    content,
-            "timestamp":  datetime.now().isoformat(),
+            "timestamp":  now,
             "session_id": session_id,
-        })
-        if session_id and session_id in self.sessions:
-            self.sessions[session_id]["msg_count"] += 1
-            self.save_sessions()
-        self.save_history()
+        }
+        self._history.append(msg)
+        if session_id and session_id in self._sessions:
+            self._sessions[session_id]["msg_count"] += 1
+
+        if self._db_ready:
+            try:
+                self._sb.table("chat_messages").insert({
+                    "session_id": session_id or None,
+                    "user_id":    self._user_id,
+                    "role":       role,
+                    "content":    content,
+                    "created_at": now,
+                }).execute()
+            except Exception as e:
+                print(f"[Memory] add_message DB error: {e}")
+            if session_id and session_id in self._sessions:
+                try:
+                    self._sb.table("chat_sessions").update({
+                        "msg_count": self._sessions[session_id]["msg_count"]
+                    }).eq("id", session_id).eq("user_id", self._user_id).execute()
+                except Exception as e:
+                    print(f"[Memory] msg_count update DB error: {e}")
 
     def get_history_for_gemini(self, session_id: str = "", max_messages: int = 60) -> list:
         """
         Return alternating user/model history for the Gemini chat API.
         Excludes the last message (just-added user message sent via send_message).
-        If session_id given, only use messages from that session.
         """
         if session_id:
-            raw = [m for m in self.history if m.get("session_id") == session_id]
+            raw = [m for m in self._history if m.get("session_id") == session_id]
         else:
-            raw = self.history
+            raw = self._history
         raw = raw[-(max_messages + 1):-1]
         result, expected = [], "user"
         for msg in raw:
@@ -131,41 +215,69 @@ class MemoryManager:
         return facts
 
     def update_facts(self, facts: dict):
-        if facts:
-            self.memory["user_facts"].update(facts)
-            self.save_memory()
+        if not facts:
+            return
+        self._facts.update(facts)
+        if self._db_ready:
+            for key, value in facts.items():
+                try:
+                    self._sb.table("user_facts").upsert({
+                        "user_id":    self._user_id,
+                        "key":        key,
+                        "value":      str(value),
+                        "updated_at": datetime.utcnow().isoformat(),
+                    }, on_conflict="user_id,key").execute()
+                except Exception as e:
+                    print(f"[Memory] update_facts DB error: {e}")
 
     def get_memory_context(self) -> str:
-        if not self.memory["user_facts"]:
+        if not self._facts:
             return ""
-        return "\n".join(f"- {k}: {v}" for k, v in self.memory["user_facts"].items())
+        return "\n".join(f"- {k}: {v}" for k, v in self._facts.items())
 
     # ── Clear ─────────────────────────────────────────────────────────────────
 
     def delete_session(self, sid: str):
         """Remove a session and all its messages."""
-        self.sessions.pop(sid, None)
-        self.history = [m for m in self.history if m.get("session_id") != sid]
-        self.save_sessions()
-        self.save_history()
+        self._sessions.pop(sid, None)
+        self._history = [m for m in self._history if m.get("session_id") != sid]
+        if self._db_ready:
+            try:
+                self._sb.table("chat_sessions").delete().eq(
+                    "id", sid
+                ).eq("user_id", self._user_id).execute()
+            except Exception as e:
+                print(f"[Memory] delete_session DB error: {e}")
 
     def clear_history(self):
-        self.history  = []
-        self.sessions = {}
-        self.save_history()
-        self.save_sessions()
+        self._history  = []
+        self._sessions = {}
+        if self._db_ready:
+            try:
+                self._sb.table("chat_sessions").delete().eq(
+                    "user_id", self._user_id
+                ).execute()
+            except Exception as e:
+                print(f"[Memory] clear_history DB error: {e}")
 
     def clear_all(self):
-        self.history  = []
-        self.sessions = {}
-        self.memory   = {"user_facts": {}}
-        self.save_history()
-        self.save_sessions()
-        self.save_memory()
+        self._history  = []
+        self._sessions = {}
+        self._facts    = {}
+        if self._db_ready:
+            try:
+                self._sb.table("chat_sessions").delete().eq(
+                    "user_id", self._user_id
+                ).execute()
+                self._sb.table("user_facts").delete().eq(
+                    "user_id", self._user_id
+                ).execute()
+            except Exception as e:
+                print(f"[Memory] clear_all DB error: {e}")
 
     def get_stats(self) -> dict:
         return {
-            "total_messages": len(self.history),
-            "facts_count":    len(self.memory["user_facts"]),
-            "known_facts":    dict(self.memory["user_facts"]),
+            "total_messages": len(self._history),
+            "facts_count":    len(self._facts),
+            "known_facts":    dict(self._facts),
         }

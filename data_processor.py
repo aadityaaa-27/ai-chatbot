@@ -54,6 +54,14 @@ class DataProcessor:
         Read an Excel or CSV file uploaded via st.file_uploader.
         Returns (DataFrame, sheet_names_list_or_None).
         """
+        MAX_BYTES = 50 * 1024 * 1024  # 50 MB
+        size = getattr(uploaded_file, "size", None)
+        if size is not None and size > MAX_BYTES:
+            raise ValueError(
+                f"File is too large ({size // (1024 * 1024)} MB). "
+                f"Maximum allowed size is 50 MB."
+            )
+
         name = uploaded_file.name.lower()
         if name.endswith(".csv"):
             df = pd.read_csv(uploaded_file)
@@ -78,8 +86,12 @@ class DataProcessor:
         Returns dict with 'column_map', 'extra_columns', 'notes'.
         """
         columns = df.columns.tolist()
-        # Send first 3 rows as context
-        sample_rows = df.head(3).fillna("").astype(str).to_dict(orient="records")
+        # Send first 3 rows as context — sanitize values to prevent prompt injection
+        raw_sample = df.head(3).fillna("").astype(str).to_dict(orient="records")
+        sample_rows = [
+            {k: re.sub(r"[\n\r`\\]", " ", str(v))[:200] for k, v in row.items()}
+            for row in raw_sample
+        ]
 
         std_schema_txt = "\n".join(
             f"  {col} ({dtype}): {desc}"
@@ -129,7 +141,14 @@ NOT like this: "Col Name": "null"
         text = r.text.strip()
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-        return json.loads(text)
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            text = re.sub(r"//[^\n]*", "", text)  # strip JS-style comments
+            result = json.loads(text)
+        if not isinstance(result.get("column_map"), dict):
+            raise ValueError("Unexpected response structure from Gemini column mapper")
+        return result
 
     # ── Step 3: Clean & transform ─────────────────────────────────────────────
 
@@ -274,7 +293,6 @@ NOT like this: "Col Name": "null"
           'replace_all'      — delete ALL rows, then insert
         source_file: filename tag stored in each row so datasets stay separate.
         """
-        safe_name = source_file.replace("'", "''")
         df = df.copy()
         # Strip source_file — don't send it in the REST insert payload.
         # PostgREST schema cache may reject unknown columns (PGRST204).
@@ -332,13 +350,10 @@ NOT like this: "Col Name": "null"
         # This is precise — doesn't depend on source_file being NULL.
         if inserted > 0:
             try:
-                sb_client.rpc(
-                    "run_employee_write",
-                    {"query_sql":
-                        f"UPDATE employees "
-                        f"SET source_file = '{safe_name}', company_id = {int(company_id)} "
-                        f"WHERE id > {max_id_before}"}
-                ).execute()
+                sb_client.table("employees").update({
+                    "source_file": source_file,
+                    "company_id":  int(company_id),
+                }).gt("id", max_id_before).execute()
             except Exception as e:
                 print(f"[DataProcessor] source_file tag failed: {e}")
 

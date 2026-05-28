@@ -1398,7 +1398,8 @@ def render_left(mm: MemoryManager):
         st.divider()
         if st.button("🚪 Sign Out", use_container_width=True, type="secondary"):
             for _k in ["logged_in", "user", "user_role", "user_dept", "user_name",
-                       "analytics_data", "active_source_file"]:
+                       "analytics_data", "active_source_file", "memory_manager",
+                       "messages", "current_sid", "title_generated"]:
                 st.session_state.pop(_k, None)
             st.rerun()
         return   # nothing else needed in sidebar for super_admin
@@ -1605,7 +1606,8 @@ def render_left(mm: MemoryManager):
     # ── Sign out ──────────────────────────────────────────────────────────────
     if st.button("🚪 Sign Out", use_container_width=True, type="secondary"):
         for _k in ["logged_in", "user", "user_role", "user_dept", "user_name",
-                   "analytics_data", "active_source_file"]:
+                   "analytics_data", "active_source_file", "memory_manager",
+                   "messages", "current_sid", "title_generated"]:
             st.session_state.pop(_k, None)
         st.rerun()
 
@@ -1965,7 +1967,7 @@ QUICK_PROMPTS = [
 def main():
     # ── Init session state ────────────────────────────────────────────────────
     if "memory_manager" not in st.session_state:
-        st.session_state.memory_manager = MemoryManager()
+        st.session_state.memory_manager = None
     if "rag" not in st.session_state:
         st.session_state.rag = RAGEngine()
     if "sql" not in st.session_state:
@@ -1982,7 +1984,6 @@ def main():
     if "title_generated" not in st.session_state:
         st.session_state.title_generated = False
 
-    mm:  MemoryManager = st.session_state.memory_manager
     sql: SQLEngine     = st.session_state.sql
     rag: RAGEngine     = st.session_state.rag
 
@@ -1990,6 +1991,13 @@ def main():
     if not st.session_state.get("logged_in"):
         show_login_page(sql)
         return
+
+    # Initialize MemoryManager after login so it can be scoped to the user
+    if st.session_state.memory_manager is None:
+        user_id = st.session_state["user"]["id"]
+        st.session_state.memory_manager = MemoryManager(user_id)
+
+    mm: MemoryManager = st.session_state.memory_manager
 
     # ── Role context ──────────────────────────────────────────────────────────
     user_role    = st.session_state.get("user_role", "hr")

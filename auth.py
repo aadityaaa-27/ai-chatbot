@@ -12,13 +12,16 @@ Roles (high → low privilege):
 Every user belongs to a company (company_id).  All data queries are
 hard-scoped to the logged-in user's company — no cross-company leakage.
 
-Passwords are SHA-256 hashed (no extra dependencies).
+Passwords are bcrypt-hashed. Existing SHA-256 hashes are upgraded to
+bcrypt automatically on the next successful login.
 """
 
 import hashlib
 import os
 from pathlib import Path
 from typing import Optional
+
+import bcrypt
 
 _AUTH_DIR = Path(__file__).resolve().parent
 _ENV_FILE  = _AUTH_DIR / ".env"
@@ -72,7 +75,23 @@ ROLES: dict[str, dict] = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _hash(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    """Hash a password with bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _is_bcrypt(h: str) -> bool:
+    return h.startswith(("$2b$", "$2a$", "$2y$"))
+
+
+def _verify(password: str, stored_hash: str) -> bool:
+    """Verify password against stored hash — supports bcrypt and legacy SHA-256."""
+    try:
+        if _is_bcrypt(stored_hash):
+            return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+        # Legacy SHA-256 — used only during migration
+        return stored_hash == hashlib.sha256(password.encode("utf-8")).hexdigest()
+    except Exception:
+        return False
 
 
 def get_auth_client():
@@ -129,28 +148,43 @@ def role_info(role: str) -> dict:
 
 def authenticate(sb, username: str, password: str) -> Optional[dict]:
     """
-    Verify credentials.  Returns full user row (including company_id) on
-    success, None on failure.
+    Verify credentials. Returns full user row on success, None on failure.
+    Automatically upgrades legacy SHA-256 hashes to bcrypt on login.
     """
     try:
-        hashed = _hash(password)
         rows = (
             sb.table("app_users")
             .select("*")
             .eq("username", username)
-            .eq("password_hash", hashed)
+            .limit(1)
             .execute()
         )
-        if rows.data:
-            user = rows.data[0]
+        if not rows.data:
+            return None
+        user = rows.data[0]
+        stored_hash = user.get("password_hash", "")
+
+        if not _verify(password, stored_hash):
+            return None
+
+        # Upgrade legacy SHA-256 hash to bcrypt transparently
+        if not _is_bcrypt(stored_hash):
             try:
-                from datetime import datetime, timezone
                 sb.table("app_users").update(
-                    {"last_login": datetime.now(timezone.utc).isoformat()}
+                    {"password_hash": _hash(password)}
                 ).eq("id", user["id"]).execute()
             except Exception:
                 pass
-            return user
+
+        try:
+            from datetime import datetime, timezone
+            sb.table("app_users").update(
+                {"last_login": datetime.now(timezone.utc).isoformat()}
+            ).eq("id", user["id"]).execute()
+        except Exception:
+            pass
+
+        return user
     except Exception as e:
         print(f"[Auth] authenticate error: {e}")
     return None
@@ -200,39 +234,29 @@ def ensure_super_admin(sb) -> bool:
 # ── Company management (super_admin only) ─────────────────────────────────────
 
 def get_all_companies(sb) -> list:
-    # Try direct PostgREST table API first (works once schema cache is warm)
     try:
         res = sb.table("companies").select("id, name, slug, created_at").order("id").execute()
         if res.data is not None:
             return res.data
     except Exception as e:
-        print(f"[Auth] get_all_companies (direct) error: {e}")
-
-    # Fallback: run via RPC
-    try:
-        res = sb.rpc("run_employee_query", {
-            "query_sql": "SELECT id, name, slug, created_at FROM companies ORDER BY id"
-        }).execute()
-        return res.data or []
-    except Exception as e:
-        print(f"[Auth] get_all_companies (rpc) error: {e}")
-        return []
+        print(f"[Auth] get_all_companies error: {e}")
+    return []
 
 
 def create_company(sb, name: str, slug: str) -> tuple[bool, str, Optional[int]]:
     """Returns (success, error_message, new_company_id)."""
     if not name.strip() or not slug.strip():
         return False, "Name and slug cannot be empty", None
-    safe_name = name.strip().replace("'", "''")
     safe_slug = slug.strip().lower().replace(" ", "-").replace("'", "")
     try:
-        sb.rpc("run_employee_write", {"query_sql":
-            f"INSERT INTO companies (name, slug) VALUES ('{safe_name}', '{safe_slug}')"
-        }).execute()
-        res = sb.rpc("run_employee_query", {"query_sql":
-            f"SELECT id FROM companies WHERE slug = '{safe_slug}' LIMIT 1"
+        res = sb.table("companies").insert({
+            "name": name.strip(),
+            "slug": safe_slug,
         }).execute()
         company_id = res.data[0]["id"] if res.data else None
+        if company_id is None:
+            res2 = sb.table("companies").select("id").eq("slug", safe_slug).limit(1).execute()
+            company_id = res2.data[0]["id"] if res2.data else None
         return True, "", company_id
     except Exception as e:
         msg = str(e)
@@ -244,12 +268,8 @@ def create_company(sb, name: str, slug: str) -> tuple[bool, str, Optional[int]]:
 def delete_company(sb, company_id: int) -> tuple[bool, str]:
     """Delete a company and all its users (employees data is NOT deleted)."""
     try:
-        sb.rpc("run_employee_write", {"query_sql":
-            f"DELETE FROM app_users WHERE company_id = {int(company_id)}"
-        }).execute()
-        sb.rpc("run_employee_write", {"query_sql":
-            f"DELETE FROM companies WHERE id = {int(company_id)}"
-        }).execute()
+        sb.table("app_users").delete().eq("company_id", int(company_id)).execute()
+        sb.table("companies").delete().eq("id", int(company_id)).execute()
         return True, ""
     except Exception as e:
         return False, str(e)
@@ -342,10 +362,10 @@ def create_invite_token(sb, company_name: str,
         from datetime import datetime, timezone, timedelta
         token      = secrets.token_urlsafe(32)
         expires_at = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
-        safe_name  = company_name.strip().replace("'", "''")
-        sb.rpc("run_employee_write", {"query_sql":
-            f"INSERT INTO invite_tokens (token, company_name, expires_at) "
-            f"VALUES ('{token}', '{safe_name}', '{expires_at}')"
+        sb.table("invite_tokens").insert({
+            "token":        token,
+            "company_name": company_name.strip(),
+            "expires_at":   expires_at,
         }).execute()
         return True, "", token
     except Exception as e:
@@ -358,11 +378,9 @@ def get_invite_token(sb, token: str) -> Optional[dict]:
     """
     try:
         from datetime import datetime, timezone
-        safe_token = token.replace("'", "''")
-        res = sb.rpc("run_employee_query", {"query_sql":
-            f"SELECT id, company_name, used, expires_at "
-            f"FROM invite_tokens WHERE token = '{safe_token}' LIMIT 1"
-        }).execute()
+        res = sb.table("invite_tokens").select(
+            "id, company_name, used, expires_at"
+        ).eq("token", token).limit(1).execute()
         if not res.data:
             return None
         row = res.data[0]
@@ -380,12 +398,10 @@ def get_invite_token(sb, token: str) -> Optional[dict]:
 def use_invite_token(sb, token: str, used_by: str) -> bool:
     """Mark a token as used."""
     try:
-        safe_token = token.replace("'", "''")
-        safe_user  = used_by.replace("'", "''")
-        sb.rpc("run_employee_write", {"query_sql":
-            f"UPDATE invite_tokens SET used = TRUE, used_by = '{safe_user}' "
-            f"WHERE token = '{safe_token}'"
-        }).execute()
+        sb.table("invite_tokens").update({
+            "used":    True,
+            "used_by": used_by,
+        }).eq("token", token).execute()
         return True
     except Exception as e:
         print(f"[Auth] use_invite_token error: {e}")
@@ -395,10 +411,9 @@ def use_invite_token(sb, token: str, used_by: str) -> bool:
 def get_all_invite_tokens(sb) -> list:
     """List all invite tokens (for super_admin panel)."""
     try:
-        res = sb.rpc("run_employee_query", {"query_sql":
-            "SELECT id, company_name, used, used_by, expires_at, created_at "
-            "FROM invite_tokens ORDER BY created_at DESC LIMIT 50"
-        }).execute()
+        res = sb.table("invite_tokens").select(
+            "id, company_name, used, used_by, expires_at, created_at"
+        ).order("created_at", desc=True).limit(50).execute()
         return res.data or []
     except Exception as e:
         print(f"[Auth] get_all_invite_tokens error: {e}")
@@ -408,9 +423,7 @@ def get_all_invite_tokens(sb) -> list:
 def revoke_invite_token(sb, token_id: int) -> bool:
     """Revoke (mark used) an invite by id."""
     try:
-        sb.rpc("run_employee_write", {"query_sql":
-            f"UPDATE invite_tokens SET used = TRUE WHERE id = {int(token_id)}"
-        }).execute()
+        sb.table("invite_tokens").update({"used": True}).eq("id", int(token_id)).execute()
         return True
     except Exception:
         return False

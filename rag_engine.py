@@ -76,7 +76,7 @@ class RAGEngine:
                 "search_company_data",
                 {
                     "query_embedding": emb,
-                    "match_threshold":  0.3,
+                    "match_threshold":  0.5,
                     "match_count":      top_k,
                 },
             ).execute()
