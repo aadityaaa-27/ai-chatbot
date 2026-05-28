@@ -129,30 +129,40 @@ class SQLEngine:
     # ── Text → SQL ────────────────────────────────────────────────────────────
 
     @staticmethod
+    def _inject_clause(sql: str, clause: str) -> str:
+        """
+        Inject a single SQL condition (already formed, e.g. "source_file='X'")
+        into the WHERE of a SELECT query.  Works for any condition string.
+        """
+        if not clause:
+            return sql
+        up = sql.upper()
+        for keyword in (" WHERE ", " GROUP BY ", " ORDER BY ", " HAVING ", " LIMIT "):
+            idx = up.find(keyword)
+            if idx != -1:
+                if keyword == " WHERE ":
+                    insert_at = idx + len(" WHERE ")
+                    return sql[:insert_at] + f"({clause}) AND (" + sql[insert_at:] + ")"
+                else:
+                    return sql[:idx] + f" WHERE {clause}" + sql[idx:]
+        return sql.rstrip(";") + f" WHERE {clause}"
+
+    @staticmethod
     def _inject_filter(sql: str, source_file: str) -> str:
         """
         Programmatically inject a source_file WHERE clause into a SQL query.
         Never relies on Gemini to add it — 100% reliable.
         """
         sf = _sf_filter(source_file)
-        if not sf:
+        return SQLEngine._inject_clause(sql, sf) if sf else sql
+
+    @staticmethod
+    def _inject_dept_filter(sql: str, department: str) -> str:
+        """Inject a department = '...' filter for manager-scoped queries."""
+        if not department:
             return sql
-
-        up = sql.upper()
-
-        # Find the right insertion point
-        for keyword in (" WHERE ", " GROUP BY ", " ORDER BY ", " HAVING ", " LIMIT "):
-            idx = up.find(keyword)
-            if idx != -1:
-                if keyword == " WHERE ":
-                    # Wrap existing WHERE condition and AND our filter
-                    insert_at = idx + len(" WHERE ")
-                    return sql[:insert_at] + f"({sf}) AND (" + sql[insert_at:] + ")"
-                else:
-                    return sql[:idx] + f" WHERE {sf}" + sql[idx:]
-
-        # No clause found — append at end
-        return sql.rstrip(";") + f" WHERE {sf}"
+        safe = department.replace("'", "''")
+        return SQLEngine._inject_clause(sql, f"department = '{safe}'")
 
     def _to_sql(self, question: str) -> str:
         """Generate SQL from natural language. source_file filter is injected separately."""
@@ -200,13 +210,15 @@ Rules:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def answer(self, question: str, source_file: str = "") -> dict:
+    def answer(self, question: str, source_file: str = "",
+               dept_filter: str = "") -> dict:
         """Return {"sql": ..., "data": [...]} or {"error": ...}."""
         if not self._ready:
             return {"error": "SQL engine not ready"}
         try:
             sql  = self._to_sql(question)
-            sql  = self._inject_filter(sql, source_file)   # deterministic filter
+            sql  = self._inject_filter(sql, source_file)        # source_file scope
+            sql  = self._inject_dept_filter(sql, dept_filter)   # dept scope (managers)
             data = self._run(sql)
             return {"sql": sql, "data": data}
         except Exception as e:
@@ -247,7 +259,8 @@ Rules:
                 pass   # column may not exist — don't block the main query
         return bad
 
-    def query(self, question: str, source_file: str = "") -> tuple:
+    def query(self, question: str, source_file: str = "",
+              dept_filter: str = "") -> tuple:
         """Return (context_string, raw_rows) — raw_rows usable for charting."""
         if not self._ready or not is_employee_question(question):
             return "", []
@@ -270,7 +283,8 @@ Rules:
                 )
                 return ctx, []
 
-        result = self.answer(question, source_file=source_file)
+        result = self.answer(question, source_file=source_file,
+                             dept_filter=dept_filter)
         if result.get("error") or not result.get("data"):
             return "", []
         rows = result["data"]

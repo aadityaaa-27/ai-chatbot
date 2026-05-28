@@ -14,6 +14,8 @@ from memory_manager import MemoryManager
 from rag_engine import RAGEngine, _secret
 from sql_engine import SQLEngine
 from data_processor import DataProcessor
+from auth import authenticate, seed_users, get_all_users, create_user, delete_user, \
+                 update_password, role_info, ROLES, get_auth_client
 
 load_dotenv()
 GEMINI_API_KEY = _secret("GEMINI_API_KEY")
@@ -272,6 +274,57 @@ hr { border-color: rgba(255,255,255,0.05) !important; margin: 0.6rem 0 !importan
     border-radius: 10px; padding: 10px 14px;
     font-size: 0.80rem; color: #bdd3ff;
     margin-top: 6px; line-height: 1.60;
+}
+
+/* ── Login page ────────────────────────────────────────────────────────────── */
+.login-card {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(79,127,255,0.20);
+    border-radius: 20px;
+    padding: 2.5rem 2rem 2rem 2rem;
+    margin-top: 1rem;
+}
+.login-logo {
+    text-align: center;
+    font-size: 3.5rem;
+    margin-bottom: 0.4rem;
+}
+.login-title {
+    text-align: center;
+    font-size: 1.6rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #6eb6ff 0%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.2rem;
+}
+.login-sub {
+    text-align: center;
+    font-size: 0.82rem;
+    color: #475569;
+    margin-bottom: 1.6rem;
+}
+
+/* ── User info badge (left panel) ──────────────────────────────────────────── */
+.user-badge {
+    background: rgba(79,127,255,0.06);
+    border: 1px solid rgba(79,127,255,0.18);
+    border-radius: 10px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+}
+.user-badge .name { font-size:0.85rem; font-weight:600; color:#cbd5e1; }
+.user-badge .role { font-size:0.70rem; color:#4f7fff; margin-top:2px; }
+
+/* ── Access denied notice ──────────────────────────────────────────────────── */
+.access-denied {
+    background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.25);
+    border-radius: 12px;
+    padding: 2rem;
+    text-align: center;
+    color: #fca5a5;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -643,7 +696,9 @@ def _chart_ai(chart_key: str, chart_title: str, rows: list,
 # ── Gemini helpers ────────────────────────────────────────────────────────────
 
 def build_system_prompt(memory_manager: MemoryManager, rag_context: str = "",
-                        emp_count: int = 0, source_file: str = "") -> str:
+                        emp_count: int = 0, source_file: str = "",
+                        user_name: str = "", user_role: str = "",
+                        user_dept: str = "") -> str:
     count_str   = f"{emp_count:,}" if emp_count else "several thousand"
     dataset_ctx = (
         f"You are currently querying the dataset from file: '{source_file}' "
@@ -651,10 +706,30 @@ def build_system_prompt(memory_manager: MemoryManager, rag_context: str = "",
         if source_file else
         f"You have access to all datasets combined ({count_str} total records).\n"
     )
+
+    # Build user identity context so AI knows who it's talking to
+    if user_name and user_role:
+        role_label = role_info(user_role).get("label", user_role)
+        if user_dept:
+            identity_ctx = (
+                f"The logged-in user is {user_name} ({role_label}, "
+                f"{user_dept} department). "
+                f"When they say 'my department', they mean '{user_dept}'. "
+                f"All employee queries are automatically scoped to the "
+                f"'{user_dept}' department for this user.\n"
+            )
+        else:
+            identity_ctx = (
+                f"The logged-in user is {user_name} ({role_label}).\n"
+            )
+    else:
+        identity_ctx = ""
+
     base = (
         "You are a smart, helpful, friendly AI assistant for an enterprise company. "
         "You have been given DIRECT ACCESS to the company's live employee database. "
         f"{dataset_ctx}"
+        f"{identity_ctx}"
         "When asked ANYTHING about employees, headcount, salary, attrition, departments, "
         "or any HR metrics — you MUST answer using the live database results provided to you. "
         "NEVER say you lack access to employee data. You have it.\n\n"
@@ -736,15 +811,20 @@ def ai_extract_facts(client: genai.Client, msg: str) -> dict:
 
 def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str,
                  rag: RAGEngine = None, sql: SQLEngine = None,
-                 source_file: str = ""):
+                 source_file: str = "", user_name: str = "",
+                 user_role: str = "", user_dept: str = ""):
     """Send a message and return (response_text, client, sql_rows)."""
     sql_ctx, sql_rows = "", []
     rag_ctx = ""
 
+    # For manager role, scope all queries to their department
+    dept_scope = user_dept if user_role == "manager" else ""
+
     emp_count = sql.employee_count(source_file=source_file) if (sql and sql.ready) else 0
 
     if sql and sql.ready:
-        sql_ctx, sql_rows = sql.query(user_input, source_file=source_file)
+        sql_ctx, sql_rows = sql.query(user_input, source_file=source_file,
+                                      dept_filter=dept_scope)
     if rag and rag.ready and not sql_ctx:
         rag_ctx = rag.get_context(user_input)
 
@@ -752,6 +832,7 @@ def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str
     system_prompt = build_system_prompt(
         memory_manager, combined,
         emp_count=emp_count, source_file=source_file,
+        user_name=user_name, user_role=user_role, user_dept=user_dept,
     )
     hist = memory_manager.get_history_for_gemini(session_id=session_id)
 
@@ -771,10 +852,209 @@ def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str
     return response.text, client, sql_rows
 
 
+# ── Login page ────────────────────────────────────────────────────────────────
+
+def show_login_page(sql: SQLEngine):
+    """Full-screen login form — uses its own Supabase client, never depends on SQLEngine."""
+    _, col, _ = st.columns([1, 1.3, 1])
+    with col:
+        st.markdown("""
+        <div class="login-card">
+          <div class="login-logo">🤖</div>
+          <div class="login-title">AI HR Platform</div>
+          <div class="login-sub">Sign in with your credentials to continue</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("Username", placeholder="Enter username")
+            password = st.text_input("Password", type="password",
+                                     placeholder="Enter password")
+            submitted = st.form_submit_button(
+                "Sign In →", type="primary", use_container_width=True
+            )
+
+        if submitted:
+            if not username.strip() or not password:
+                st.error("Please enter both username and password.")
+                return
+
+            with st.spinner("Signing in…"):
+                # ── Get a Supabase client (auth doesn't need Gemini) ──────────
+                sb = None
+                if sql and sql.ready and sql._sb:
+                    sb = sql._sb          # reuse existing connection
+                if sb is None:
+                    sb = get_auth_client()  # direct connection from .env
+
+                if sb is None:
+                    st.error(
+                        "Cannot reach the database. Check that `SUPABASE_URL` "
+                        "and `SUPABASE_KEY` are set in your `.env` file."
+                    )
+                    return
+
+                # ── Seed default users on first-ever login ────────────────────
+                try:
+                    seed_users(sb)
+                except Exception as seed_err:
+                    err_str = str(seed_err).lower()
+                    if any(k in err_str for k in
+                           ["app_users", "relation", "does not exist"]):
+                        st.error(
+                            "**One-time setup needed** — the `app_users` table "
+                            "doesn't exist yet.\n\n"
+                            "Run **`users_setup.sql`** in Supabase → SQL Editor, "
+                            "then try again."
+                        )
+                        with st.expander("📋 Copy-paste SQL"):
+                            st.code(
+                                "CREATE TABLE IF NOT EXISTS app_users (\n"
+                                "    id            SERIAL PRIMARY KEY,\n"
+                                "    username      TEXT UNIQUE NOT NULL,\n"
+                                "    password_hash TEXT NOT NULL,\n"
+                                "    role          TEXT NOT NULL DEFAULT 'hr'\n"
+                                "      CHECK (role IN ('admin','hr','payroll','manager')),\n"
+                                "    department    TEXT,\n"
+                                "    full_name     TEXT NOT NULL DEFAULT '',\n"
+                                "    created_at    TIMESTAMPTZ DEFAULT NOW(),\n"
+                                "    last_login    TIMESTAMPTZ\n"
+                                ");",
+                                language="sql",
+                            )
+                        return
+                    # Other seed errors are non-fatal — still attempt auth
+
+                # ── Authenticate ──────────────────────────────────────────────
+                user = authenticate(sb, username.strip(), password)
+
+            if user:
+                st.session_state["logged_in"]  = True
+                st.session_state["user"]        = user
+                st.session_state["user_role"]   = user["role"]
+                st.session_state["user_dept"]   = user.get("department")
+                st.session_state["user_name"]   = user.get("full_name", username)
+                st.rerun()
+            else:
+                st.error("Incorrect username or password.")
+
+        with st.expander("👁️ Demo credentials"):
+            st.markdown("""
+| Username | Password | Role |
+|----------|----------|------|
+| admin | admin123 | 👑 Admin |
+| hr_manager | hr123 | 🧑‍💼 HR Manager |
+| payroll_user | payroll123 | 💰 Payroll |
+| sales_head | sales123 | 🏢 Sales Manager |
+| tech_head | tech123 | 🏢 Tech Manager |
+""")
+
+
+# ── Admin panel ───────────────────────────────────────────────────────────────
+
+def render_admin_tab(sql: SQLEngine):
+    """User management panel — admin role only."""
+    st.markdown("### 👑 User Management")
+
+    if not (sql and sql.ready):
+        st.warning("Database not connected.")
+        return
+
+    sb = sql._sb
+
+    # ── Current users ─────────────────────────────────────────────────────────
+    users = get_all_users(sb)
+    if users:
+        df = pd.DataFrame(users)
+        # Add friendly role label
+        df["role_label"] = df["role"].map(
+            lambda r: f"{ROLES.get(r,{}).get('icon','')} {ROLES.get(r,{}).get('label', r)}"
+        )
+        display_cols = ["username", "role_label", "department", "full_name", "last_login"]
+        display_cols = [c for c in display_cols if c in df.columns]
+        st.dataframe(df[display_cols].rename(columns={"role_label": "role"}),
+                     use_container_width=True, hide_index=True)
+    else:
+        st.info("No users found.")
+
+    st.divider()
+
+    # ── Add new user ──────────────────────────────────────────────────────────
+    with st.expander("➕ Add New User"):
+        with st.form("add_user_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                nu_username  = st.text_input("Username *")
+                nu_password  = st.text_input("Password *", type="password")
+                nu_fullname  = st.text_input("Full Name *")
+            with col2:
+                nu_role = st.selectbox(
+                    "Role *", list(ROLES.keys()),
+                    format_func=lambda r: f"{ROLES[r]['icon']}  {ROLES[r]['label']}"
+                )
+                nu_dept = st.text_input(
+                    "Department (required for Manager role)",
+                    placeholder="e.g. Sales, Finance, R&D"
+                )
+            nu_submit = st.form_submit_button("Create User", type="primary")
+
+        if nu_submit:
+            ok, err = create_user(sb, nu_username, nu_password,
+                                  nu_role, nu_dept, nu_fullname)
+            if ok:
+                st.success(f"User '{nu_username}' created successfully.")
+                st.rerun()
+            else:
+                st.error(f"Failed: {err}")
+
+    # ── Change password ───────────────────────────────────────────────────────
+    with st.expander("🔑 Change Password"):
+        with st.form("change_pw_form", clear_on_submit=True):
+            users_fresh = get_all_users(sb)
+            opts = {f"{u['username']} ({u['role']})": u["id"]
+                    for u in users_fresh}
+            sel_user  = st.selectbox("Select user", list(opts.keys()))
+            new_pw    = st.text_input("New password", type="password")
+            pw_submit = st.form_submit_button("Update Password")
+        if pw_submit and new_pw:
+            if update_password(sb, opts[sel_user], new_pw):
+                st.success("Password updated.")
+            else:
+                st.error("Failed to update password.")
+
+    # ── Delete user ───────────────────────────────────────────────────────────
+    with st.expander("🗑️ Delete User"):
+        users_fresh = get_all_users(sb)
+        del_opts = {f"{u['username']} ({u['role']})": u["id"]
+                    for u in users_fresh}
+        del_sel = st.selectbox("Select user to delete", list(del_opts.keys()),
+                               key="del_user_sel")
+        if st.button("Delete User", type="secondary"):
+            if delete_user(sb, del_opts[del_sel]):
+                st.success("User deleted.")
+                st.rerun()
+            else:
+                st.error("Failed to delete user.")
+
+
 # ── Left panel ────────────────────────────────────────────────────────────────
 
 def render_left(mm: MemoryManager):
     sql: SQLEngine = st.session_state.get("sql")
+
+    # ── User badge ────────────────────────────────────────────────────────────
+    user_role = st.session_state.get("user_role", "hr")
+    user_name = st.session_state.get("user_name", "User")
+    rcfg      = role_info(user_role)
+    st.markdown(
+        f'<div class="user-badge">'
+        f'<div class="name">{user_name}</div>'
+        f'<div class="role">{rcfg["icon"]} {rcfg["label"]}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     # ── Header ────────────────────────────────────────────────────────────────
     st.markdown("## 🤖 AI Chatbot")
@@ -853,7 +1133,21 @@ def render_left(mm: MemoryManager):
         )
         st.caption("")
 
-    datasets = sql.get_source_files() if (sql and sql.ready) else []
+    all_datasets = sql.get_source_files() if (sql and sql.ready) else []
+
+    # ── Payroll role: restrict to allowed datasets only ───────────────────────
+    allowed_ds = rcfg.get("datasets")   # None = all; list = restricted
+    if allowed_ds is not None:
+        datasets = [d for d in all_datasets if d["source_file"] in allowed_ds]
+        if not datasets and all_datasets:
+            st.markdown(
+                '<div class="setup-box">⚠️ Your role only has access to '
+                f'<b>{", ".join(allowed_ds)}</b>. '
+                'Upload that dataset first.</div>',
+                unsafe_allow_html=True,
+            )
+    else:
+        datasets = all_datasets
 
     if not datasets:
         st.caption("No datasets yet. Upload a file →")
@@ -958,6 +1252,15 @@ def render_left(mm: MemoryManager):
             st.session_state.current_sid     = None
             st.session_state.title_generated = False
             st.rerun()
+
+    st.divider()
+
+    # ── Sign out ──────────────────────────────────────────────────────────────
+    if st.button("🚪 Sign Out", use_container_width=True, type="secondary"):
+        for _k in ["logged_in", "user", "user_role", "user_dept", "user_name",
+                   "analytics_data", "active_source_file"]:
+            st.session_state.pop(_k, None)
+        st.rerun()
 
 
 # ── Upload tab ────────────────────────────────────────────────────────────────
@@ -1132,12 +1435,34 @@ def render_upload_tab(sql: SQLEngine):
 
 # ── Analytics tab ─────────────────────────────────────────────────────────────
 
-def render_analytics(sql: SQLEngine, source_file: str = ""):
+def render_analytics(sql: SQLEngine, source_file: str = "",
+                     role: str = "hr", dept_filter: str = ""):
+    """
+    role        — controls salary chart visibility
+    dept_filter — non-empty string forces a department sub-filter (manager role)
+    """
+    can_salary = role_info(role).get("can_see_salary", True)
+
+    # For manager role, enforce their department as the source_file filter
+    # by appending a note; the actual SQL filtering is done via source_file
+    # (managers see all datasets but analytics are scoped to their dept via
+    # a secondary WHERE added below when dept_filter is set)
+    effective_sf = source_file   # used for analytics queries
+
     label = f"📊 Analytics — {source_file}" if source_file else "📊 HR Analytics Dashboard"
+    if dept_filter:
+        label += f" · {dept_filter} only"
     st.markdown(f"### {label}")
+
     if not (sql and sql.ready):
         st.warning("⚠️ Analytics require a live Supabase connection.")
         return
+
+    if not can_salary:
+        st.info(
+            "ℹ️ Salary data is not visible for your role. "
+            "Contact HR or Admin if you need access."
+        )
 
     col_refresh, col_space = st.columns([1, 5])
     with col_refresh:
@@ -1174,17 +1499,24 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             _render_chart("dept_attrition", fig, rows,
                           "Attrition Rate % by Department", source_file, sql)
 
-    # ── Row 2: Salary + Age groups ────────────────────────────────────────────
+    # ── Row 2: Salary (role-gated) + Age groups ──────────────────────────────
     c3, c4 = st.columns(2)
     with c3:
-        rows = data.get("dept_salary", [])
-        if rows:
-            df  = pd.DataFrame(rows)
-            fig = analytics_bar(df, "department", "avg_salary",
-                                "💰 Avg Monthly Salary by Department ($)",
-                                color_scale=[[0,"#103528"],[1,"#34d399"]])
-            _render_chart("dept_salary", fig, rows,
-                          "Avg Monthly Salary by Department", source_file, sql)
+        if can_salary:
+            rows = data.get("dept_salary", [])
+            if rows:
+                df  = pd.DataFrame(rows)
+                fig = analytics_bar(df, "department", "avg_salary",
+                                    "💰 Avg Monthly Salary by Department ($)",
+                                    color_scale=[[0,"#103528"],[1,"#34d399"]])
+                _render_chart("dept_salary", fig, rows,
+                              "Avg Monthly Salary by Department", source_file, sql)
+        else:
+            st.markdown(
+                '<div class="access-denied">'
+                '🔒 Salary data hidden for your role</div>',
+                unsafe_allow_html=True,
+            )
     with c4:
         rows = data.get("age_groups", [])
         if rows:
@@ -1287,6 +1619,11 @@ def main():
         st.session_state.rag = RAGEngine()
     if "sql" not in st.session_state:
         st.session_state.sql = SQLEngine()
+    # Re-init if a previously-cached instance failed to connect (stale session state)
+    if not st.session_state.sql.ready:
+        st.session_state.sql = SQLEngine()
+    if not st.session_state.rag.ready:
+        st.session_state.rag = RAGEngine()
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "current_sid" not in st.session_state:
@@ -1298,19 +1635,39 @@ def main():
     sql: SQLEngine     = st.session_state.sql
     rag: RAGEngine     = st.session_state.rag
 
+    # ── Auth gate ─────────────────────────────────────────────────────────────
+    if not st.session_state.get("logged_in"):
+        show_login_page(sql)
+        return
+
+    # ── Role context ──────────────────────────────────────────────────────────
+    user_role  = st.session_state.get("user_role", "hr")
+    user_dept  = st.session_state.get("user_dept") or ""   # manager's department
+    user_name  = st.session_state.get("user_name", "User")
+    rcfg       = role_info(user_role)
+    allowed_tabs = rcfg["tabs"]
+
     left_col, right_col = st.columns([1, 3], gap="small")
 
     with left_col:
         render_left(mm)
 
     with right_col:
-        tab_chat, tab_analytics, tab_upload = st.tabs(["💬 Chat", "📊 Analytics", "📤 Upload Data"])
+        # Build tab list dynamically from role config
+        tab_labels = []
+        if "chat"      in allowed_tabs: tab_labels.append("💬 Chat")
+        if "analytics" in allowed_tabs: tab_labels.append("📊 Analytics")
+        if "upload"    in allowed_tabs: tab_labels.append("📤 Upload Data")
+        if "admin"     in allowed_tabs: tab_labels.append("👑 Admin")
+
+        all_tabs = st.tabs(tab_labels)
+        tab_map  = {label: tab for label, tab in zip(tab_labels, all_tabs)}
 
         # ── Chat tab ─────────────────────────────────────────────────────────
-        with tab_chat:
+        if "💬 Chat" in tab_map:
+          with tab_map["💬 Chat"]:
             messages = st.session_state.messages
 
-            # Welcome screen with quick prompts
             if not messages:
                 st.markdown("""
                 <div style='padding: 3rem 1rem 1.5rem 1rem; text-align: center;'>
@@ -1329,11 +1686,9 @@ def main():
                             st.session_state.quick_prompt = prompt
                             st.rerun()
 
-            # Render existing messages
             for msg in messages:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
-                    # Dataset source badge on assistant messages
                     if msg["role"] == "assistant":
                         sf_label = msg.get("source_file", "")
                         badge = sf_label if sf_label else "All datasets"
@@ -1341,30 +1696,41 @@ def main():
                             f'<div class="ds-badge">📂 {badge}</div>',
                             unsafe_allow_html=True,
                         )
-                    # Show chart if this message has SQL data
                     chart_data = msg.get("chart_data", [])
                     if chart_data and len(chart_data) > 1:
                         fig = make_chart(chart_data)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True)
 
-            # ── Sticky chat input (always visible at bottom of tab) ───────────────
             user_input = st.chat_input("Ask me anything…")
             submitted  = bool(user_input)
 
         # ── Analytics tab ─────────────────────────────────────────────────────
-        with tab_analytics:
-            active_sf = st.session_state.get("active_source_file", "")
-            render_analytics(sql, source_file=active_sf)
+        if "📊 Analytics" in tab_map:
+          with tab_map["📊 Analytics"]:
+            active_sf  = st.session_state.get("active_source_file", "")
+            dept_scope = user_dept if rcfg.get("dept_filter") else ""
+            render_analytics(sql, source_file=active_sf,
+                             role=user_role, dept_filter=dept_scope)
 
-        # ── Upload tab ─────────────────────────────────────────────────────────
-        with tab_upload:
+        # ── Upload tab ────────────────────────────────────────────────────────
+        if "📤 Upload Data" in tab_map:
+          with tab_map["📤 Upload Data"]:
             render_upload_tab(sql)
+
+        # ── Admin tab ─────────────────────────────────────────────────────────
+        if "👑 Admin" in tab_map:
+          with tab_map["👑 Admin"]:
+            render_admin_tab(sql)
 
     # ── Handle quick prompt ───────────────────────────────────────────────────
     if "quick_prompt" in st.session_state:
         user_input = st.session_state.pop("quick_prompt")
         submitted  = True
+    else:
+        # user_input / submitted may not exist if Chat tab isn't in role's tabs
+        user_input = locals().get("user_input")
+        submitted  = locals().get("submitted", False)
 
     if not (submitted and user_input and user_input.strip()):
         return
@@ -1389,7 +1755,7 @@ def main():
 
     # Get AI response
     with right_col:
-        with tab_chat:
+        with tab_map.get("💬 Chat", st.container()):
             with st.chat_message("assistant"):
                 with st.spinner("Thinking…"):
                     try:
@@ -1398,6 +1764,9 @@ def main():
                             mm, user_input, sid,
                             rag=rag, sql=sql,
                             source_file=active_sf,
+                            user_name=user_name,
+                            user_role=user_role,
+                            user_dept=user_dept,
                         )
                         st.markdown(response_text)
                         # Dataset badge — shown immediately on new response

@@ -9,8 +9,21 @@ from google import genai
 
 
 def _secret(key: str) -> str:
-    """Read from .env first, fall back to st.secrets (Streamlit Cloud / Render)."""
-    val = os.getenv(key, "")
+    """
+    Read an env var, loading .env by absolute path first so it works regardless
+    of Streamlit's working directory.  Falls back to st.secrets on Render/Cloud.
+    """
+    # Load .env using the file's own directory — cwd-independent
+    if not os.environ.get(key):
+        try:
+            from pathlib import Path
+            from dotenv import load_dotenv
+            load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env",
+                        override=False)
+        except Exception:
+            pass
+
+    val = os.environ.get(key, "")
     if not val:
         try:
             import streamlit as st
