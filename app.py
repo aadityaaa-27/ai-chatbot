@@ -28,80 +28,251 @@ st.set_page_config(
 # ── CSS (pure CSS only — no JS, fully Render-safe) ────────────────────────────
 st.markdown("""
 <style>
+/* ── Hide Streamlit chrome ─────────────────────────────────────────────────── */
 #MainMenu, footer, header,
 [data-testid="stToolbar"],
 [data-testid="stDecoration"],
 [data-testid="stSidebar"],
 [data-testid="collapsedControl"] { display: none !important; }
 
-html, body, .stApp { background: #0d0d0d !important; }
-.block-container    { padding: 0 !important; max-width: 100% !important; }
+/* ── Base ──────────────────────────────────────────────────────────────────── */
+html, body, .stApp {
+    background: #09090f !important;
+    color: #e2e8f0 !important;
+}
+.block-container { padding: 0 !important; max-width: 100% !important; }
 [data-testid="stHorizontalBlock"] { gap: 0 !important; }
 
-/* Session cards */
-.scard {
-    background: #141414; border: 1px solid #222;
-    border-radius: 8px; padding: 9px 12px 7px 12px;
-    margin: 3px 0; transition: border-color .15s;
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a2a3d; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #4f7fff; }
+
+/* ── Gradient headings ─────────────────────────────────────────────────────── */
+h1, h2, h3 {
+    background: linear-gradient(135deg, #6eb6ff 0%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    font-weight: 700 !important;
 }
-.scard:hover { border-color: #333; }
-.scard.active { border-color: #1a73e8; background: #0d1f40; }
-.scard-title  { font-size: 0.83rem; font-weight: 600; color: #e0e0e0;
-                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.scard-meta   { font-size: 0.64rem; color: #3a3a3a; margin-top: 2px; }
+/* h4/h5 stay plain white */
+h4, h5, h6 { color: #cbd5e1 !important; }
 
-/* Section label */
-.sec {
-    font-size: 0.60rem; font-weight: 700; letter-spacing: .10em;
-    text-transform: uppercase; color: #333; margin: 0.8rem 0 0.3rem 0;
+/* ── Dividers ──────────────────────────────────────────────────────────────── */
+hr { border-color: rgba(255,255,255,0.05) !important; margin: 0.6rem 0 !important; }
+
+/* ── Buttons ───────────────────────────────────────────────────────────────── */
+.stButton > button,
+[data-testid="stFormSubmitButton"] > button {
+    border-radius: 10px !important;
+    font-weight: 500 !important;
+    font-size: 0.83rem !important;
+    transition: all 0.2s ease !important;
+    letter-spacing: 0.01em !important;
+}
+/* Primary */
+.stButton > button[kind="primary"],
+[data-testid="stBaseButton-primary"] {
+    background: linear-gradient(135deg, #4f7fff 0%, #8b5cf6 100%) !important;
+    border: none !important;
+    color: #fff !important;
+    box-shadow: 0 0 18px rgba(79,127,255,0.30) !important;
+}
+.stButton > button[kind="primary"]:hover,
+[data-testid="stBaseButton-primary"]:hover {
+    box-shadow: 0 0 28px rgba(79,127,255,0.50) !important;
+    transform: translateY(-1px) !important;
+}
+/* Secondary / default */
+.stButton > button:not([kind="primary"]),
+[data-testid="stBaseButton-secondary"] {
+    background: rgba(255,255,255,0.03) !important;
+    border: 1px solid rgba(79,127,255,0.25) !important;
+    color: #94a3b8 !important;
+}
+.stButton > button:not([kind="primary"]):hover,
+[data-testid="stBaseButton-secondary"]:hover {
+    border-color: rgba(79,127,255,0.55) !important;
+    color: #6eb6ff !important;
+    background: rgba(79,127,255,0.07) !important;
+    box-shadow: 0 0 12px rgba(79,127,255,0.15) !important;
+}
+/* Form submit button */
+[data-testid="stFormSubmitButton"] > button {
+    background: linear-gradient(135deg, #4f7fff 0%, #8b5cf6 100%) !important;
+    border: none !important;
+    color: #fff !important;
+    box-shadow: 0 0 14px rgba(79,127,255,0.25) !important;
 }
 
-/* Status badge */
-.status-ok  { color: #4ade80; font-size: 0.75rem; }
-.status-err { color: #f87171; font-size: 0.75rem; }
-
-/* Setup notice */
-.setup-box {
-    background: #1a1200; border: 1px solid #3d2e00;
-    border-radius: 8px; padding: 10px 12px; font-size: 0.78rem; color: #f5c518;
+/* ── Tabs ──────────────────────────────────────────────────────────────────── */
+[data-testid="stTabs"] > div:first-child {
+    border-bottom: 1px solid rgba(255,255,255,0.06) !important;
+    gap: 4px !important;
+}
+[data-testid="stTabs"] button {
+    font-size: 0.84rem !important;
+    font-weight: 500 !important;
+    color: #64748b !important;
+    border-radius: 8px 8px 0 0 !important;
+    padding: 6px 16px !important;
+    transition: all 0.2s !important;
+}
+[data-testid="stTabs"] button:hover { color: #94a3b8 !important; }
+[data-testid="stTabs"] button[aria-selected="true"] {
+    color: #6eb6ff !important;
+    border-bottom: 2px solid #4f7fff !important;
+    background: rgba(79,127,255,0.06) !important;
 }
 
-/* Dataset source badge on AI messages */
-.ds-badge {
-    display: inline-block; background: #1a2a1a; border: 1px solid #2a3d2a;
-    color: #4ade80; border-radius: 6px; font-size: 0.68rem;
-    padding: 2px 8px; margin-top: 6px;
-}
-
-hr { border-color: #1a1a1a !important; margin: 0.5rem 0 !important; }
-
-/* Sticky chat input — dark theme */
+/* ── Chat input ────────────────────────────────────────────────────────────── */
 [data-testid="stChatInput"] {
-    background: #0d0d0d !important;
-    border-top: 1px solid #1e1e1e !important;
-    padding: 6px 0 !important;
+    background: #09090f !important;
+    border-top: 1px solid rgba(255,255,255,0.05) !important;
+    padding: 8px 0 !important;
 }
 [data-testid="stChatInput"] textarea {
-    background: #141414 !important;
-    color: #e0e0e0 !important;
-    border: 1px solid #2a2a2a !important;
-    border-radius: 10px !important;
+    background: #0f0f1a !important;
+    color: #e2e8f0 !important;
+    border: 1px solid rgba(79,127,255,0.20) !important;
+    border-radius: 14px !important;
+    font-size: 0.92rem !important;
 }
 [data-testid="stChatInput"] textarea:focus {
-    border-color: #1a73e8 !important;
-    box-shadow: 0 0 0 1px #1a73e8 !important;
+    border-color: #4f7fff !important;
+    box-shadow: 0 0 0 2px rgba(79,127,255,0.18), 0 0 22px rgba(79,127,255,0.10) !important;
 }
 
-/* Per-chart AI answer bubble */
+/* ── Text inputs ───────────────────────────────────────────────────────────── */
+[data-testid="stTextInput"] input {
+    background: #0f0f1a !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 10px !important;
+    color: #e2e8f0 !important;
+}
+[data-testid="stTextInput"] input:focus {
+    border-color: #4f7fff !important;
+    box-shadow: 0 0 0 2px rgba(79,127,255,0.15) !important;
+}
+
+/* ── Selectbox ─────────────────────────────────────────────────────────────── */
+[data-testid="stSelectbox"] > div > div {
+    background: #0f0f1a !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 10px !important;
+    color: #e2e8f0 !important;
+}
+
+/* ── Radio ─────────────────────────────────────────────────────────────────── */
+[data-testid="stRadio"] label p { color: #94a3b8 !important; }
+
+/* ── File uploader ─────────────────────────────────────────────────────────── */
+[data-testid="stFileUploader"] section {
+    background: rgba(79,127,255,0.03) !important;
+    border: 1.5px dashed rgba(79,127,255,0.28) !important;
+    border-radius: 14px !important;
+}
+[data-testid="stFileUploader"] section:hover {
+    border-color: rgba(79,127,255,0.55) !important;
+    background: rgba(79,127,255,0.06) !important;
+}
+
+/* ── Plotly chart cards ────────────────────────────────────────────────────── */
+[data-testid="stPlotlyChart"] > div {
+    background: rgba(255,255,255,0.02) !important;
+    border: 1px solid rgba(255,255,255,0.07) !important;
+    border-radius: 14px !important;
+    padding: 4px !important;
+    transition: border-color 0.2s !important;
+}
+[data-testid="stPlotlyChart"] > div:hover {
+    border-color: rgba(79,127,255,0.22) !important;
+}
+
+/* ── Progress bar ──────────────────────────────────────────────────────────── */
+[data-testid="stProgress"] > div > div > div > div {
+    background: linear-gradient(90deg, #4f7fff 0%, #8b5cf6 100%) !important;
+    border-radius: 4px !important;
+}
+
+/* ── Expanders ─────────────────────────────────────────────────────────────── */
+[data-testid="stExpander"] {
+    background: rgba(255,255,255,0.02) !important;
+    border: 1px solid rgba(255,255,255,0.07) !important;
+    border-radius: 10px !important;
+}
+[data-testid="stExpander"]:hover {
+    border-color: rgba(79,127,255,0.20) !important;
+}
+
+/* ── Dataframe ─────────────────────────────────────────────────────────────── */
+[data-testid="stDataFrame"] {
+    border-radius: 12px !important;
+    overflow: hidden !important;
+    border: 1px solid rgba(255,255,255,0.07) !important;
+}
+
+/* ── Alerts ────────────────────────────────────────────────────────────────── */
+[data-testid="stAlert"] { border-radius: 10px !important; }
+
+/* ── Session cards ─────────────────────────────────────────────────────────── */
+.scard {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px; padding: 9px 12px 7px 12px;
+    margin: 3px 0; transition: all 0.18s ease;
+}
+.scard:hover {
+    border-color: rgba(79,127,255,0.30);
+    background: rgba(79,127,255,0.05);
+}
+.scard.active {
+    border-color: #4f7fff;
+    background: rgba(79,127,255,0.10);
+    box-shadow: 0 0 16px rgba(79,127,255,0.14);
+}
+.scard-title {
+    font-size: 0.83rem; font-weight: 600; color: #cbd5e1;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.scard-meta { font-size: 0.64rem; color: #334155; margin-top: 2px; }
+
+/* ── Section labels ────────────────────────────────────────────────────────── */
+.sec {
+    font-size: 0.60rem; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: #334155;
+    margin: 0.9rem 0 0.3rem 0;
+}
+
+/* ── Status badges ─────────────────────────────────────────────────────────── */
+.status-ok  { color: #34d399; font-size: 0.75rem; }
+.status-err { color: #f87171; font-size: 0.75rem; }
+
+/* ── Setup notice ──────────────────────────────────────────────────────────── */
+.setup-box {
+    background: rgba(245,197,24,0.05); border: 1px solid rgba(245,197,24,0.20);
+    border-radius: 10px; padding: 10px 12px; font-size: 0.78rem; color: #f5c518;
+}
+
+/* ── Dataset source badge ──────────────────────────────────────────────────── */
+.ds-badge {
+    display: inline-block;
+    background: rgba(79,127,255,0.08); border: 1px solid rgba(79,127,255,0.22);
+    color: #6eb6ff; border-radius: 20px; font-size: 0.68rem;
+    padding: 2px 10px; margin-top: 6px;
+}
+
+/* ── Per-chart AI answer bubble ────────────────────────────────────────────── */
 .chart-ai-ans {
-    background: #0a1a0a; border: 1px solid #1a3a1a;
-    border-radius: 8px; padding: 9px 13px;
-    font-size: 0.80rem; color: #b8d8b8;
-    margin-top: 4px; line-height: 1.55;
+    background: rgba(79,127,255,0.06);
+    border: 1px solid rgba(79,127,255,0.20);
+    border-left: 3px solid #4f7fff;
+    border-radius: 10px; padding: 10px 14px;
+    font-size: 0.80rem; color: #bdd3ff;
+    margin-top: 6px; line-height: 1.60;
 }
-
-/* Tighten tab font */
-[data-testid="stTabs"] button { font-size: 0.84rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -111,11 +282,18 @@ hr { border-color: #1a1a1a !important; margin: 0.5rem 0 !important; }
 _DARK = dict(
     plot_bgcolor="rgba(0,0,0,0)",
     paper_bgcolor="rgba(0,0,0,0)",
-    font_color="#cccccc",
-    margin=dict(t=36, b=10, l=10, r=10),
-    height=280,
+    font_color="#94a3b8",
+    margin=dict(t=40, b=12, l=12, r=12),
+    height=290,
     showlegend=False,
     coloraxis_showscale=False,
+    title_font=dict(size=13, color="#cbd5e1"),
+    hoverlabel=dict(
+        bgcolor="#1e1e2e",
+        bordercolor="rgba(79,127,255,0.4)",
+        font_color="#e2e8f0",
+        font_size=12,
+    ),
 )
 
 
@@ -131,12 +309,19 @@ def make_chart(rows: list):
         if not num_cols or not txt_cols:
             return None
         x_col, y_col = txt_cols[0], num_cols[0]
+        _PIE_COLORS = ["#4f7fff", "#8b5cf6", "#06b6d4", "#34d399", "#f59e0b"]
         # Pie for very small sets (≤ 4 categories, e.g. gender)
         if len(df) <= 4:
             fig = px.pie(
                 df, names=x_col, values=y_col,
                 template="plotly_dark",
-                color_discrete_sequence=px.colors.sequential.Blues_r,
+                color_discrete_sequence=_PIE_COLORS,
+            )
+            fig.update_traces(
+                hole=0.42,
+                textposition="inside",
+                textinfo="percent+label",
+                marker_line=dict(color="#09090f", width=2),
             )
         else:
             df = df.sort_values(y_col, ascending=True).tail(15)
@@ -144,15 +329,17 @@ def make_chart(rows: list):
                 df, x=y_col, y=x_col, orientation="h",
                 template="plotly_dark",
                 color=y_col,
-                color_continuous_scale="Blues",
+                color_continuous_scale=[[0,"#1e2a5e"],[1,"#4f7fff"]],
             )
+            fig.update_traces(marker_line_width=0)
         fig.update_layout(**_DARK)
         return fig
     except Exception:
         return None
 
 
-def analytics_bar(df: pd.DataFrame, x: str, y: str, title: str, color_scale="Blues"):
+def analytics_bar(df: pd.DataFrame, x: str, y: str, title: str,
+                  color_scale="Blues"):
     df = df.sort_values(y, ascending=True)
     fig = px.bar(
         df, x=y, y=x, orientation="h",
@@ -160,16 +347,24 @@ def analytics_bar(df: pd.DataFrame, x: str, y: str, title: str, color_scale="Blu
         color=y, color_continuous_scale=color_scale,
     )
     fig.update_layout(**_DARK)
+    fig.update_traces(marker_line_width=0)
     return fig
 
 
 def analytics_pie(df: pd.DataFrame, names: str, values: str, title: str):
+    _PIE_COLORS = ["#4f7fff", "#8b5cf6", "#06b6d4", "#34d399", "#f59e0b", "#f87171"]
     fig = px.pie(
         df, names=names, values=values,
         title=title, template="plotly_dark",
-        color_discrete_sequence=px.colors.sequential.Blues_r,
+        color_discrete_sequence=_PIE_COLORS,
     )
     fig.update_layout(**{**_DARK, "showlegend": True})
+    fig.update_traces(
+        textposition="inside",
+        textinfo="percent+label",
+        hole=0.42,              # donut style — modern look
+        marker_line=dict(color="#09090f", width=2),
+    )
     return fig
 
 
@@ -964,15 +1159,20 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
         rows = data.get("dept_headcount", [])
         if rows:
             df  = pd.DataFrame(rows)
-            fig = analytics_bar(df, "department", "employees", "👥 Employees by Department")
-            _render_chart("dept_headcount", fig, rows, "Employees by Department", source_file, sql)
+            fig = analytics_bar(df, "department", "employees",
+                                "👥 Employees by Department",
+                                color_scale=[[0,"#1e3a6e"],[1,"#4f7fff"]])
+            _render_chart("dept_headcount", fig, rows, "Employees by Department",
+                          source_file, sql)
     with c2:
         rows = data.get("dept_attrition", [])
         if rows:
             df  = pd.DataFrame(rows)
             fig = analytics_bar(df, "department", "attrition_pct",
-                                "📉 Attrition Rate by Department (%)", "Reds")
-            _render_chart("dept_attrition", fig, rows, "Attrition Rate % by Department", source_file, sql)
+                                "📉 Attrition Rate by Department (%)",
+                                color_scale=[[0,"#3d1a1a"],[1,"#f87171"]])
+            _render_chart("dept_attrition", fig, rows,
+                          "Attrition Rate % by Department", source_file, sql)
 
     # ── Row 2: Salary + Age groups ────────────────────────────────────────────
     c3, c4 = st.columns(2)
@@ -981,17 +1181,22 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
         if rows:
             df  = pd.DataFrame(rows)
             fig = analytics_bar(df, "department", "avg_salary",
-                                "💰 Avg Monthly Salary by Department ($)", "Greens")
-            _render_chart("dept_salary", fig, rows, "Avg Monthly Salary by Department", source_file, sql)
+                                "💰 Avg Monthly Salary by Department ($)",
+                                color_scale=[[0,"#103528"],[1,"#34d399"]])
+            _render_chart("dept_salary", fig, rows,
+                          "Avg Monthly Salary by Department", source_file, sql)
     with c4:
         rows = data.get("age_groups", [])
         if rows:
             df  = pd.DataFrame(rows)
-            fig = px.bar(df, x="age_group", y="employees", title="📅 Age Distribution",
+            fig = px.bar(df, x="age_group", y="employees",
+                         title="📅 Age Distribution",
                          template="plotly_dark", color="employees",
-                         color_continuous_scale="Blues")
+                         color_continuous_scale=[[0,"#2d1f6e"],[1,"#8b5cf6"]])
             fig.update_layout(**_DARK)
-            _render_chart("age_groups", fig, rows, "Age Distribution of Employees", source_file, sql)
+            fig.update_traces(marker_line_width=0)
+            _render_chart("age_groups", fig, rows,
+                          "Age Distribution of Employees", source_file, sql)
 
     # ── Row 3: Gender + Job Satisfaction ─────────────────────────────────────
     c5, c6 = st.columns(2)
@@ -999,8 +1204,10 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
         rows = data.get("gender", [])
         if rows:
             df  = pd.DataFrame(rows)
-            fig = analytics_pie(df, "gender", "employees", "👫 Male / Female Distribution")
-            _render_chart("gender", fig, rows, "Male / Female Distribution", source_file, sql)
+            fig = analytics_pie(df, "gender", "employees",
+                                "👫 Male / Female Distribution")
+            _render_chart("gender", fig, rows,
+                          "Male / Female Distribution", source_file, sql)
     with c6:
         rows = data.get("satisfaction", [])
         if rows:
@@ -1008,9 +1215,11 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             label_map = {1: "Low", 2: "Medium", 3: "High", 4: "Very High"}
             df["job_satisfaction"] = df["job_satisfaction"].map(label_map)
             fig = px.bar(df, x="job_satisfaction", y="employees",
-                         title="😊 Job Satisfaction", template="plotly_dark",
-                         color="employees", color_continuous_scale="Blues")
+                         title="😊 Job Satisfaction",
+                         template="plotly_dark", color="employees",
+                         color_continuous_scale=[[0,"#1a2a1a"],[1,"#34d399"]])
             fig.update_layout(**_DARK)
+            fig.update_traces(marker_line_width=0)
             _render_chart("satisfaction", fig, df.to_dict(orient="records"),
                           "Job Satisfaction Distribution", source_file, sql)
 
@@ -1020,8 +1229,10 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
         rows = data.get("overtime", [])
         if rows:
             df  = pd.DataFrame(rows)
-            fig = analytics_pie(df, "overtime", "employees", "⏰ Overtime Distribution")
-            _render_chart("overtime", fig, rows, "Overtime Distribution", source_file, sql)
+            fig = analytics_pie(df, "overtime", "employees",
+                                "⏰ Overtime Distribution")
+            _render_chart("overtime", fig, rows,
+                          "Overtime Distribution", source_file, sql)
     with c8:
         rows = data.get("education", [])
         if rows:
@@ -1029,10 +1240,12 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
             edu_map = {1: "Below College", 2: "College", 3: "Bachelor",
                        4: "Master", 5: "Doctor"}
             df["education"] = df["education"].map(edu_map)
-            fig = px.bar(df, x="education", y="employees", title="🎓 Education Level",
+            fig = px.bar(df, x="education", y="employees",
+                         title="🎓 Education Level",
                          template="plotly_dark", color="employees",
-                         color_continuous_scale="Purples")
+                         color_continuous_scale=[[0,"#2a1a3d"],[1,"#a78bfa"]])
             fig.update_layout(**_DARK)
+            fig.update_traces(marker_line_width=0)
             _render_chart("education", fig, df.to_dict(orient="records"),
                           "Education Level Distribution", source_file, sql)
 
@@ -1043,9 +1256,15 @@ def render_analytics(sql: SQLEngine, source_file: str = ""):
         fig = px.bar(df, x="department", y="employees", color="gender",
                      barmode="group", title="👫 Male / Female by Department",
                      template="plotly_dark",
-                     color_discrete_map={"Male": "#1a73e8", "Female": "#e84a1a"})
-        fig.update_layout(**{**_DARK, "showlegend": True, "height": 320})
-        _render_chart("gender_by_dept", fig, rows, "Gender Breakdown by Department", source_file, sql)
+                     color_discrete_map={"Male": "#4f7fff", "Female": "#a78bfa"})
+        fig.update_layout(**{**_DARK, "showlegend": True, "height": 320,
+                             "legend": dict(
+                                 bgcolor="rgba(0,0,0,0)",
+                                 font_color="#94a3b8",
+                             )})
+        fig.update_traces(marker_line_width=0)
+        _render_chart("gender_by_dept", fig, rows,
+                      "Gender Breakdown by Department", source_file, sql)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
