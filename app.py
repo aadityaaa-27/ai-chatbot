@@ -530,13 +530,28 @@ def make_chart(rows: list):
 
 def analytics_bar(df: pd.DataFrame, x: str, y: str, title: str,
                   color_scale="Blues"):
-    df = df.sort_values(y, ascending=True)
+    # Limit to top 8 rows so mobile bars don't get too small
+    df = df.sort_values(y, ascending=False).head(8).sort_values(y, ascending=True)
     fig = px.bar(
         df, x=y, y=x, orientation="h",
         title=title, template="plotly_dark",
         color=y, color_continuous_scale=color_scale,
     )
     fig.update_layout(**_DARK)
+    fig.update_xaxes(
+        tickfont_size=10,
+        automargin=True,
+        showgrid=True, gridcolor="rgba(255,255,255,0.05)",
+    )
+    fig.update_yaxes(
+        tickfont_size=10,
+        automargin=True,
+        tickmode="array",
+        # Truncate long labels so they don't overflow on mobile
+        ticktext=[str(v)[:18] + "…" if len(str(v)) > 18 else str(v)
+                  for v in df[x].tolist()],
+        tickvals=df[x].tolist(),
+    )
     fig.update_traces(marker_line_width=0)
     return fig
 
@@ -548,12 +563,28 @@ def analytics_pie(df: pd.DataFrame, names: str, values: str, title: str):
         title=title, template="plotly_dark",
         color_discrete_sequence=_PIE_COLORS,
     )
-    fig.update_layout(**{**_DARK, "showlegend": True})
+    fig.update_layout(**{
+        **_DARK,
+        "showlegend": True,
+        # Legend inside chart, horizontal at bottom — compact on mobile
+        "legend": dict(
+            orientation="h",
+            x=0.5, xanchor="center",
+            y=-0.15, yanchor="top",
+            font_size=10,
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        "margin": dict(t=40, b=50, l=8, r=8),
+    })
     fig.update_traces(
+        hole=0.45,
+        # Only show percent inside the slice — no label text, no overflow
         textposition="inside",
-        textinfo="percent+label",
-        hole=0.42,              # donut style — modern look
+        textinfo="percent",
+        textfont_size=11,
         marker_line=dict(color="#09090f", width=2),
+        # Pull slices slightly so legend doesn't overlap
+        pull=[0.02] * len(df),
     )
     return fig
 
