@@ -1205,9 +1205,10 @@ def render_left(mm: MemoryManager):
     sql: SQLEngine = st.session_state.get("sql")
 
     # ── User badge ────────────────────────────────────────────────────────────
-    user_role = st.session_state.get("user_role", "hr")
-    user_name = st.session_state.get("user_name", "User")
-    rcfg      = role_info(user_role)
+    user_role    = st.session_state.get("user_role", "hr")
+    user_name    = st.session_state.get("user_name", "User")
+    user_company = st.session_state.get("user_company_id") or 0
+    rcfg         = role_info(user_role)
     st.markdown(
         f'<div class="user-badge">'
         f'<div class="name">{user_name}</div>'
