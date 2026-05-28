@@ -565,25 +565,29 @@ def analytics_pie(df: pd.DataFrame, names: str, values: str, title: str):
     )
     fig.update_layout(**{
         **_DARK,
+        "height": 400,
         "showlegend": True,
-        # Legend inside chart, horizontal at bottom — compact on mobile
+        # Horizontal legend placed inside the figure at the very bottom row
+        # — stays visible at all zoom levels because it's within the height budget
         "legend": dict(
             orientation="h",
             x=0.5, xanchor="center",
-            y=-0.15, yanchor="top",
+            y=0.02, yanchor="bottom",
             font_size=10,
             bgcolor="rgba(0,0,0,0)",
         ),
-        "margin": dict(t=40, b=50, l=8, r=8),
+        # Leave room at top for title and bottom row for legend
+        "margin": dict(t=44, b=10, l=8, r=8),
     })
     fig.update_traces(
         hole=0.45,
+        # Shrink the pie domain upward so legend row doesn't overlap slices
+        domain=dict(x=[0, 1], y=[0.18, 1]),
         # Only show percent inside the slice — no label text, no overflow
         textposition="inside",
         textinfo="percent",
         textfont_size=11,
         marker_line=dict(color="#09090f", width=2),
-        # Pull slices slightly so legend doesn't overlap
         pull=[0.02] * len(df),
     )
     return fig
