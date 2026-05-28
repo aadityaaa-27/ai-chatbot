@@ -316,3 +316,92 @@ def update_password(sb, user_id: int, new_password: str) -> tuple[bool, str]:
         return True, ""
     except Exception as e:
         return False, str(e)
+
+
+# ── Invite link system ────────────────────────────────────────────────────────
+
+def create_invite_token(sb, company_name: str,
+                        hours: int = 48) -> tuple[bool, str, str]:
+    """
+    Generate a one-time invite token for a new company.
+    Returns (success, error_message, token).
+    """
+    if not company_name.strip():
+        return False, "Company name cannot be empty", ""
+    try:
+        import secrets
+        from datetime import datetime, timezone, timedelta
+        token      = secrets.token_urlsafe(32)
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+        safe_name  = company_name.strip().replace("'", "''")
+        sb.rpc("run_employee_write", {"query_sql":
+            f"INSERT INTO invite_tokens (token, company_name, expires_at) "
+            f"VALUES ('{token}', '{safe_name}', '{expires_at}')"
+        }).execute()
+        return True, "", token
+    except Exception as e:
+        return False, str(e), ""
+
+
+def get_invite_token(sb, token: str) -> Optional[dict]:
+    """
+    Look up a token. Returns the row dict if valid & unused, else None.
+    """
+    try:
+        from datetime import datetime, timezone
+        safe_token = token.replace("'", "''")
+        res = sb.rpc("run_employee_query", {"query_sql":
+            f"SELECT id, company_name, used, expires_at "
+            f"FROM invite_tokens WHERE token = '{safe_token}' LIMIT 1"
+        }).execute()
+        if not res.data:
+            return None
+        row = res.data[0]
+        if row["used"]:
+            return None
+        expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > expires:
+            return None
+        return row
+    except Exception as e:
+        print(f"[Auth] get_invite_token error: {e}")
+        return None
+
+
+def use_invite_token(sb, token: str, used_by: str) -> bool:
+    """Mark a token as used."""
+    try:
+        safe_token = token.replace("'", "''")
+        safe_user  = used_by.replace("'", "''")
+        sb.rpc("run_employee_write", {"query_sql":
+            f"UPDATE invite_tokens SET used = TRUE, used_by = '{safe_user}' "
+            f"WHERE token = '{safe_token}'"
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"[Auth] use_invite_token error: {e}")
+        return False
+
+
+def get_all_invite_tokens(sb) -> list:
+    """List all invite tokens (for super_admin panel)."""
+    try:
+        res = sb.rpc("run_employee_query", {"query_sql":
+            "SELECT id, company_name, used, used_by, expires_at, created_at "
+            "FROM invite_tokens ORDER BY created_at DESC LIMIT 50"
+        }).execute()
+        return res.data or []
+    except Exception as e:
+        print(f"[Auth] get_all_invite_tokens error: {e}")
+        return []
+
+
+def revoke_invite_token(sb, token_id: int) -> bool:
+    """Revoke (mark used) an invite by id."""
+    try:
+        sb.rpc("run_employee_write", {"query_sql":
+            f"UPDATE invite_tokens SET used = TRUE WHERE id = {int(token_id)}"
+        }).execute()
+        return True
+    except Exception:
+        return False
