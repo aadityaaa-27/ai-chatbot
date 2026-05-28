@@ -329,6 +329,140 @@ hr { border-color: rgba(255,255,255,0.05) !important; margin: 0.6rem 0 !importan
     text-align: center;
     color: #fca5a5;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE  (≤ 768 px)
+   ══════════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+
+    /* ── Columns → stack vertically ─────────────────────────────────────── */
+    [data-testid="stHorizontalBlock"] {
+        flex-direction: column !important;
+    }
+    [data-testid="column"] {
+        width: 100% !important;
+        min-width: 100% !important;
+        flex: 1 1 100% !important;
+        border-right: none !important;
+    }
+
+    /* ── Left panel: compact horizontal strip ───────────────────────────── */
+    .user-badge {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 10px;
+    }
+    .user-badge .name { font-size: 0.80rem; }
+    .user-badge .role { font-size: 0.65rem; margin-top: 0; }
+
+    /* ── Section labels: tighter spacing ───────────────────────────────── */
+    .sec { margin: 0.5rem 0 0.2rem 0; }
+
+    /* ── Headings ───────────────────────────────────────────────────────── */
+    h1 { font-size: 1.4rem !important; }
+    h2 { font-size: 1.15rem !important; }
+    h3 { font-size: 1.0rem !important; }
+
+    /* ── Tabs: scrollable, no wrapping ─────────────────────────────────── */
+    [data-testid="stTabs"] > div:first-child {
+        overflow-x: auto !important;
+        flex-wrap: nowrap !important;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+    [data-testid="stTabs"] > div:first-child::-webkit-scrollbar { display: none; }
+    [data-testid="stTabs"] button {
+        font-size: 0.78rem !important;
+        padding: 5px 12px !important;
+        white-space: nowrap !important;
+    }
+
+    /* ── Buttons: full width + bigger tap target ────────────────────────── */
+    .stButton > button,
+    [data-testid="stFormSubmitButton"] > button {
+        width: 100% !important;
+        padding: 0.65rem 1rem !important;
+        font-size: 0.88rem !important;
+        min-height: 44px !important;
+    }
+
+    /* ── Inputs: bigger touch targets ──────────────────────────────────── */
+    [data-testid="stTextInput"] input,
+    [data-testid="stSelectbox"] > div > div {
+        font-size: 16px !important;   /* prevents iOS auto-zoom */
+        min-height: 44px !important;
+    }
+    [data-testid="stChatInput"] textarea {
+        font-size: 16px !important;   /* prevents iOS auto-zoom */
+    }
+
+    /* ── Charts: shorter on mobile ──────────────────────────────────────── */
+    [data-testid="stPlotlyChart"] .js-plotly-plot,
+    [data-testid="stPlotlyChart"] .plot-container {
+        height: 220px !important;
+        max-height: 220px !important;
+    }
+
+    /* ── Login: remove side columns, full width ─────────────────────────── */
+    .login-card {
+        padding: 1.5rem 1rem !important;
+        margin-top: 0.5rem !important;
+        border-radius: 14px !important;
+    }
+    .login-logo  { font-size: 2.5rem !important; }
+    .login-title { font-size: 1.3rem !important; }
+    .login-sub   { font-size: 0.75rem !important; }
+
+    /* ── Chat messages: smaller avatars ────────────────────────────────── */
+    [data-testid="stChatMessage"] {
+        padding: 0.5rem !important;
+    }
+    [data-testid="stChatMessage"] > div:first-child {
+        width: 28px !important;
+        height: 28px !important;
+        font-size: 0.75rem !important;
+    }
+
+    /* ── Dataframe: horizontal scroll ───────────────────────────────────── */
+    [data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    /* ── File uploader ───────────────────────────────────────────────────── */
+    [data-testid="stFileUploader"] section {
+        padding: 1rem !important;
+    }
+
+    /* ── Expanders ───────────────────────────────────────────────────────── */
+    [data-testid="stExpander"] summary {
+        font-size: 0.82rem !important;
+    }
+
+    /* ── Chat input: always visible at bottom ───────────────────────────── */
+    [data-testid="stChatInput"] {
+        position: sticky !important;
+        bottom: 0 !important;
+        z-index: 100 !important;
+        padding: 6px 0 !important;
+    }
+
+    /* ── Block container: add side padding on mobile ────────────────────── */
+    .block-container {
+        padding: 0.5rem !important;
+    }
+}
+
+/* ── Very small phones (≤ 400 px) ─────────────────────────────────────────── */
+@media (max-width: 400px) {
+    [data-testid="stTabs"] button {
+        font-size: 0.70rem !important;
+        padding: 4px 8px !important;
+    }
+    h1 { font-size: 1.2rem !important; }
+    .login-title { font-size: 1.1rem !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -880,7 +1014,7 @@ def show_login_page(sql: SQLEngine):
 
     # ── Invite registration flow (full screen, no tabs) ───────────────────────
     if invite_data:
-        _, col, _ = st.columns([1, 1.3, 1])
+        _, col, _ = st.columns([0.5, 2, 0.5])
         with col:
             company_name = invite_data["company_name"]
             st.markdown(f"""
@@ -944,7 +1078,7 @@ def show_login_page(sql: SQLEngine):
         return   # don't show normal login when invite is active
 
     # ── Normal login ──────────────────────────────────────────────────────────
-    _, col, _ = st.columns([1, 1.3, 1])
+    _, col, _ = st.columns([0.5, 2, 0.5])
     with col:
         st.markdown("""
         <div class="login-card">
