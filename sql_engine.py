@@ -164,6 +164,13 @@ class SQLEngine:
         safe = department.replace("'", "''")
         return SQLEngine._inject_clause(sql, f"department = '{safe}'")
 
+    @staticmethod
+    def _inject_company_filter(sql: str, company_id: int) -> str:
+        """Inject company_id isolation — every query must be scoped to one company."""
+        if not company_id:
+            return sql
+        return SQLEngine._inject_clause(sql, f"company_id = {int(company_id)}")
+
     def _to_sql(self, question: str) -> str:
         """Generate SQL from natural language. source_file filter is injected separately."""
         prompt = f"""You are an expert PostgreSQL analyst.
@@ -211,14 +218,15 @@ Rules:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def answer(self, question: str, source_file: str = "",
-               dept_filter: str = "") -> dict:
+               dept_filter: str = "", company_id: int = 0) -> dict:
         """Return {"sql": ..., "data": [...]} or {"error": ...}."""
         if not self._ready:
             return {"error": "SQL engine not ready"}
         try:
             sql  = self._to_sql(question)
-            sql  = self._inject_filter(sql, source_file)        # source_file scope
-            sql  = self._inject_dept_filter(sql, dept_filter)   # dept scope (managers)
+            sql  = self._inject_company_filter(sql, company_id)  # company isolation FIRST
+            sql  = self._inject_filter(sql, source_file)         # then dataset scope
+            sql  = self._inject_dept_filter(sql, dept_filter)    # then dept scope
             data = self._run(sql)
             return {"sql": sql, "data": data}
         except Exception as e:
@@ -260,7 +268,7 @@ Rules:
         return bad
 
     def query(self, question: str, source_file: str = "",
-              dept_filter: str = "") -> tuple:
+              dept_filter: str = "", company_id: int = 0) -> tuple:
         """Return (context_string, raw_rows) — raw_rows usable for charting."""
         if not self._ready or not is_employee_question(question):
             return "", []
@@ -284,7 +292,7 @@ Rules:
                 return ctx, []
 
         result = self.answer(question, source_file=source_file,
-                             dept_filter=dept_filter)
+                             dept_filter=dept_filter, company_id=company_id)
         if result.get("error") or not result.get("data"):
             return "", []
         rows = result["data"]
@@ -325,27 +333,20 @@ Rules:
         except Exception:
             return False
 
-    def get_source_files(self) -> list:
-        """Return list of dicts: [{source_file, count}] for all datasets."""
+    def get_source_files(self, company_id: int = 0) -> list:
+        """Return list of dicts: [{source_file, count}] scoped to company."""
         if not self._ready:
             return []
         try:
+            co = f"WHERE company_id = {int(company_id)}" if company_id else ""
             return self._run(
-                "SELECT COALESCE(source_file, 'original') as source_file, "
-                "COUNT(*) as count "
-                "FROM employees "
-                "GROUP BY COALESCE(source_file, 'original') "
-                "ORDER BY source_file"
+                f"SELECT COALESCE(source_file, 'original') as source_file, "
+                f"COUNT(*) as count "
+                f"FROM employees {co} "
+                f"GROUP BY COALESCE(source_file, 'original') "
+                f"ORDER BY source_file"
             )
         except Exception:
-            # source_file column not set up yet — fall back to total count
-            try:
-                r = self._sb.table("employees").select("*", count="exact").execute()
-                count = r.count or 0
-                if count > 0:
-                    return [{"source_file": "original", "count": count}]
-            except Exception:
-                pass
             return []
 
     def delete_source_file(self, source_file: str) -> bool:
@@ -384,13 +385,19 @@ Rules:
             print(f"[SQL] fill_null_gender failed: {e}")
             return False
 
-    def get_analytics_data(self, source_file: str = "") -> dict:
+    def get_analytics_data(self, source_file: str = "",
+                           company_id: int = 0) -> dict:
         """Pre-built analytics queries for the dashboard tab."""
         if not self._ready:
             return {}
+        conditions = []
+        if company_id:
+            conditions.append(f"company_id = {int(company_id)}")
         sf = _sf_filter(source_file)
-        w  = f"WHERE {sf}" if sf else ""   # e.g. "WHERE source_file = 'file.csv'"
-        ext = "AND" if w else "WHERE"      # connector for extra conditions
+        if sf:
+            conditions.append(sf)
+        w   = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        ext = "AND" if w else "WHERE"
 
         # ── Auto-fill gender if the entire dataset has NULL gender ────────────
         try:
@@ -559,15 +566,18 @@ Rules:
                 print(f"[Analytics] {key} failed: {e}")
         return results
 
-    def employee_count(self, source_file: str = "") -> int:
+    def employee_count(self, source_file: str = "", company_id: int = 0) -> int:
         if not self._ready:
             return 0
         try:
+            conditions = []
+            if company_id:
+                conditions.append(f"company_id = {int(company_id)}")
             sf = _sf_filter(source_file)
             if sf:
-                rows = self._run(f"SELECT COUNT(*) as n FROM employees WHERE {sf}")
-                return rows[0]["n"] if rows else 0
-            r = self._sb.table("employees").select("*", count="exact").execute()
-            return r.count or 0
+                conditions.append(sf)
+            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+            rows = self._run(f"SELECT COUNT(*) as n FROM employees {where}")
+            return int(rows[0]["n"]) if rows else 0
         except Exception:
             return 0

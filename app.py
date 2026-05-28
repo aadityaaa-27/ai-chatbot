@@ -14,8 +14,9 @@ from memory_manager import MemoryManager
 from rag_engine import RAGEngine, _secret
 from sql_engine import SQLEngine
 from data_processor import DataProcessor
-from auth import authenticate, seed_users, get_all_users, create_user, delete_user, \
-                 update_password, role_info, ROLES, get_auth_client
+from auth import (authenticate, ensure_super_admin, get_all_users, create_user,
+                  delete_user, update_password, role_info, ROLES, get_auth_client,
+                  get_all_companies, create_company, delete_company)
 
 load_dotenv()
 GEMINI_API_KEY = _secret("GEMINI_API_KEY")
@@ -522,7 +523,8 @@ def _find_chart_data(question: str, all_analytics: dict,
             # ── 2. Cache miss — refresh analytics once and retry ──────────────
             if not _cache_refreshed and sql and sql.ready:
                 try:
-                    fresh = sql.get_analytics_data(source_file=source_file)
+                    fresh = sql.get_analytics_data(source_file=source_file,
+                                                   company_id=st.session_state.get("user_company_id") or 0)
                     st.session_state["analytics_data"] = fresh
                     all_analytics.update(fresh)      # mutate in-place so caller sees it
                     _cache_refreshed = True
@@ -812,19 +814,21 @@ def ai_extract_facts(client: genai.Client, msg: str) -> dict:
 def chat_with_ai(memory_manager: MemoryManager, user_input: str, session_id: str,
                  rag: RAGEngine = None, sql: SQLEngine = None,
                  source_file: str = "", user_name: str = "",
-                 user_role: str = "", user_dept: str = ""):
+                 user_role: str = "", user_dept: str = "",
+                 company_id: int = 0):
     """Send a message and return (response_text, client, sql_rows)."""
     sql_ctx, sql_rows = "", []
     rag_ctx = ""
 
-    # For manager role, scope all queries to their department
     dept_scope = user_dept if user_role == "manager" else ""
 
-    emp_count = sql.employee_count(source_file=source_file) if (sql and sql.ready) else 0
+    emp_count = sql.employee_count(source_file=source_file,
+                                   company_id=company_id) if (sql and sql.ready) else 0
 
     if sql and sql.ready:
         sql_ctx, sql_rows = sql.query(user_input, source_file=source_file,
-                                      dept_filter=dept_scope)
+                                      dept_filter=dept_scope,
+                                      company_id=company_id)
     if rag and rag.ready and not sql_ctx:
         rag_ctx = rag.get_context(user_input)
 
@@ -896,46 +900,22 @@ def show_login_page(sql: SQLEngine):
                     )
                     return
 
-                # ── Seed default users on first-ever login ────────────────────
+                # ── Ensure platform super_admin exists (non-fatal) ────────────
                 try:
-                    seed_users(sb)
-                except Exception as seed_err:
-                    err_str = str(seed_err).lower()
-                    if any(k in err_str for k in
-                           ["app_users", "relation", "does not exist"]):
-                        st.error(
-                            "**One-time setup needed** — the `app_users` table "
-                            "doesn't exist yet.\n\n"
-                            "Run **`users_setup.sql`** in Supabase → SQL Editor, "
-                            "then try again."
-                        )
-                        with st.expander("📋 Copy-paste SQL"):
-                            st.code(
-                                "CREATE TABLE IF NOT EXISTS app_users (\n"
-                                "    id            SERIAL PRIMARY KEY,\n"
-                                "    username      TEXT UNIQUE NOT NULL,\n"
-                                "    password_hash TEXT NOT NULL,\n"
-                                "    role          TEXT NOT NULL DEFAULT 'hr'\n"
-                                "      CHECK (role IN ('admin','hr','payroll','manager')),\n"
-                                "    department    TEXT,\n"
-                                "    full_name     TEXT NOT NULL DEFAULT '',\n"
-                                "    created_at    TIMESTAMPTZ DEFAULT NOW(),\n"
-                                "    last_login    TIMESTAMPTZ\n"
-                                ");",
-                                language="sql",
-                            )
-                        return
-                    # Other seed errors are non-fatal — still attempt auth
+                    ensure_super_admin(sb)
+                except Exception:
+                    pass
 
                 # ── Authenticate ──────────────────────────────────────────────
                 user = authenticate(sb, username.strip(), password)
 
             if user:
-                st.session_state["logged_in"]  = True
-                st.session_state["user"]        = user
-                st.session_state["user_role"]   = user["role"]
-                st.session_state["user_dept"]   = user.get("department")
-                st.session_state["user_name"]   = user.get("full_name", username)
+                st.session_state["logged_in"]       = True
+                st.session_state["user"]            = user
+                st.session_state["user_role"]       = user["role"]
+                st.session_state["user_dept"]       = user.get("department")
+                st.session_state["user_name"]       = user.get("full_name", username)
+                st.session_state["user_company_id"] = user.get("company_id")
                 st.rerun()
             else:
                 st.error("Incorrect username or password.")
@@ -955,43 +935,107 @@ def show_login_page(sql: SQLEngine):
 # ── Admin panel ───────────────────────────────────────────────────────────────
 
 def render_admin_tab(sql: SQLEngine):
-    """User management panel — admin role only."""
-    st.markdown("### 👑 User Management")
-
+    """Admin panel — scoped by role: super_admin manages companies, admin manages users."""
     if not (sql and sql.ready):
         st.warning("Database not connected.")
         return
 
-    sb = sql._sb
+    sb         = sql._sb
+    viewer_role= st.session_state.get("user_role", "admin")
+    company_id = st.session_state.get("user_company_id") or None
 
-    # ── Current users ─────────────────────────────────────────────────────────
-    users = get_all_users(sb)
-    if users:
-        df = pd.DataFrame(users)
-        # Add friendly role label
-        df["role_label"] = df["role"].map(
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SUPER ADMIN — company management
+    # ═══════════════════════════════════════════════════════════════════════════
+    if viewer_role == "super_admin":
+        st.markdown("### 🌐 Company Management")
+
+        companies = get_all_companies(sb)
+        if companies:
+            st.dataframe(pd.DataFrame(companies), use_container_width=True, hide_index=True)
+        else:
+            st.info("No companies yet.")
+
+        st.divider()
+
+        with st.expander("➕ Create New Company"):
+            with st.form("create_company_form", clear_on_submit=True):
+                c_name = st.text_input("Company Name *", placeholder="Acme Corp")
+                c_slug = st.text_input("Slug * (unique, no spaces)", placeholder="acme")
+                c_admin_user = st.text_input("First Admin Username *")
+                c_admin_pass = st.text_input("First Admin Password *", type="password")
+                c_admin_name = st.text_input("Admin Full Name *")
+                c_submit = st.form_submit_button("Create Company + Admin", type="primary")
+
+            if c_submit:
+                ok, err, cid = create_company(sb, c_name, c_slug)
+                if ok and cid:
+                    u_ok, u_err = create_user(sb, c_admin_user, c_admin_pass,
+                                              "admin", None, c_admin_name, cid)
+                    if u_ok:
+                        st.success(f"Company '{c_name}' created (id={cid}) with admin '{c_admin_user}'.")
+                        st.rerun()
+                    else:
+                        st.error(f"Company created but admin failed: {u_err}")
+                else:
+                    st.error(f"Failed: {err}")
+
+        with st.expander("🗑️ Delete Company"):
+            if companies:
+                del_opts = {f"{c['name']} (id={c['id']})": c["id"] for c in companies}
+                del_sel  = st.selectbox("Select company", list(del_opts.keys()), key="del_co")
+                st.warning("This will delete the company and ALL its users. Employee data is kept.")
+                if st.button("Delete Company", type="secondary"):
+                    ok, err = delete_company(sb, del_opts[del_sel])
+                    if ok:
+                        st.success("Company deleted.")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed: {err}")
+
+        st.divider()
+        st.markdown("### 👥 All Users (across all companies)")
+        all_users = get_all_users(sb)  # no company_id filter for super_admin
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # COMPANY ADMIN — user management (own company only)
+    # ═══════════════════════════════════════════════════════════════════════════
+    else:
+        st.markdown("### 👑 User Management")
+        all_users = get_all_users(sb, company_id=company_id)
+
+    # ── Users table ───────────────────────────────────────────────────────────
+    if all_users:
+        df_u = pd.DataFrame(all_users)
+        df_u["role_label"] = df_u["role"].map(
             lambda r: f"{ROLES.get(r,{}).get('icon','')} {ROLES.get(r,{}).get('label', r)}"
         )
         display_cols = ["username", "role_label", "department", "full_name", "last_login"]
-        display_cols = [c for c in display_cols if c in df.columns]
-        st.dataframe(df[display_cols].rename(columns={"role_label": "role"}),
+        if viewer_role == "super_admin":
+            display_cols = ["company_id"] + display_cols
+        display_cols = [c for c in display_cols if c in df_u.columns]
+        st.dataframe(df_u[display_cols].rename(columns={"role_label": "role"}),
                      use_container_width=True, hide_index=True)
     else:
         st.info("No users found.")
 
+    if viewer_role == "super_admin":
+        return   # super_admin doesn't create users here — done per-company above
+
     st.divider()
 
-    # ── Add new user ──────────────────────────────────────────────────────────
+    # ── Add new user (company-scoped) ─────────────────────────────────────────
     with st.expander("➕ Add New User"):
         with st.form("add_user_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
-                nu_username  = st.text_input("Username *")
-                nu_password  = st.text_input("Password *", type="password")
-                nu_fullname  = st.text_input("Full Name *")
+                nu_username = st.text_input("Username *")
+                nu_password = st.text_input("Password * (min 6 chars)", type="password")
+                nu_fullname = st.text_input("Full Name *")
             with col2:
+                addable_roles = [r for r in ROLES if r != "super_admin"]
                 nu_role = st.selectbox(
-                    "Role *", list(ROLES.keys()),
+                    "Role *", addable_roles,
                     format_func=lambda r: f"{ROLES[r]['icon']}  {ROLES[r]['label']}"
                 )
                 nu_dept = st.text_input(
@@ -1002,9 +1046,10 @@ def render_admin_tab(sql: SQLEngine):
 
         if nu_submit:
             ok, err = create_user(sb, nu_username, nu_password,
-                                  nu_role, nu_dept, nu_fullname)
+                                  nu_role, nu_dept, nu_fullname,
+                                  company_id=company_id)
             if ok:
-                st.success(f"User '{nu_username}' created successfully.")
+                st.success(f"User '{nu_username}' created.")
                 st.rerun()
             else:
                 st.error(f"Failed: {err}")
@@ -1012,25 +1057,24 @@ def render_admin_tab(sql: SQLEngine):
     # ── Change password ───────────────────────────────────────────────────────
     with st.expander("🔑 Change Password"):
         with st.form("change_pw_form", clear_on_submit=True):
-            users_fresh = get_all_users(sb)
-            opts = {f"{u['username']} ({u['role']})": u["id"]
-                    for u in users_fresh}
-            sel_user  = st.selectbox("Select user", list(opts.keys()))
-            new_pw    = st.text_input("New password", type="password")
+            u_fresh = get_all_users(sb, company_id=company_id)
+            opts    = {f"{u['username']} ({u['role']})": u["id"] for u in u_fresh}
+            sel_user = st.selectbox("Select user", list(opts.keys()))
+            new_pw   = st.text_input("New password (min 6 chars)", type="password")
             pw_submit = st.form_submit_button("Update Password")
         if pw_submit and new_pw:
-            if update_password(sb, opts[sel_user], new_pw):
+            ok, err = update_password(sb, opts[sel_user], new_pw)
+            if ok:
                 st.success("Password updated.")
             else:
-                st.error("Failed to update password.")
+                st.error(f"Failed: {err}")
 
     # ── Delete user ───────────────────────────────────────────────────────────
     with st.expander("🗑️ Delete User"):
-        users_fresh = get_all_users(sb)
-        del_opts = {f"{u['username']} ({u['role']})": u["id"]
-                    for u in users_fresh}
-        del_sel = st.selectbox("Select user to delete", list(del_opts.keys()),
-                               key="del_user_sel")
+        u_fresh2  = get_all_users(sb, company_id=company_id)
+        del_opts  = {f"{u['username']} ({u['role']})": u["id"] for u in u_fresh2}
+        del_sel   = st.selectbox("Select user to delete", list(del_opts.keys()),
+                                 key="del_user_sel")
         if st.button("Delete User", type="secondary"):
             if delete_user(sb, del_opts[del_sel]):
                 st.success("User deleted.")
@@ -1133,7 +1177,7 @@ def render_left(mm: MemoryManager):
         )
         st.caption("")
 
-    all_datasets = sql.get_source_files() if (sql and sql.ready) else []
+    all_datasets = sql.get_source_files(company_id=user_company) if (sql and sql.ready) else []
 
     # ── Payroll role: restrict to allowed datasets only ───────────────────────
     allowed_ds = rcfg.get("datasets")   # None = all; list = restricted
@@ -1411,7 +1455,8 @@ def render_upload_tab(sql: SQLEngine):
             progress.progress(40, text="Inserting into database…")
             result = dp.insert_to_db(clean_df, sb,
                                      mode=import_mode,
-                                     source_file=dataset_name)
+                                     source_file=dataset_name,
+                                     company_id=st.session_state.get("user_company_id") or 1)
             progress.progress(100, text="Done!")
 
             if result["inserted"] > 0:
@@ -1471,7 +1516,10 @@ def render_analytics(sql: SQLEngine, source_file: str = "",
 
     if "analytics_data" not in st.session_state:
         with st.spinner("Loading analytics data…"):
-            st.session_state.analytics_data = sql.get_analytics_data(source_file=source_file)
+            st.session_state.analytics_data = sql.get_analytics_data(
+                source_file=source_file,
+                company_id=st.session_state.get("user_company_id") or 0
+            )
 
     data = st.session_state.analytics_data
     if not data:
@@ -1641,10 +1689,11 @@ def main():
         return
 
     # ── Role context ──────────────────────────────────────────────────────────
-    user_role  = st.session_state.get("user_role", "hr")
-    user_dept  = st.session_state.get("user_dept") or ""   # manager's department
-    user_name  = st.session_state.get("user_name", "User")
-    rcfg       = role_info(user_role)
+    user_role    = st.session_state.get("user_role", "hr")
+    user_dept    = st.session_state.get("user_dept") or ""
+    user_name    = st.session_state.get("user_name", "User")
+    user_company = st.session_state.get("user_company_id") or 0   # 0 = super_admin (no company)
+    rcfg         = role_info(user_role)
     allowed_tabs = rcfg["tabs"]
 
     left_col, right_col = st.columns([1, 3], gap="small")
@@ -1767,6 +1816,7 @@ def main():
                             user_name=user_name,
                             user_role=user_role,
                             user_dept=user_dept,
+                            company_id=user_company,
                         )
                         st.markdown(response_text)
                         # Dataset badge — shown immediately on new response

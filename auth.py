@@ -1,13 +1,17 @@
 """
-Authentication & Role-Based Access Control
-=========================================
+Authentication & Role-Based Access Control — Multi-Tenant
+=========================================================
 Roles (high → low privilege):
-  admin    — everything, including user management
-  hr       — all data, all HR tabs, upload
-  payroll  — restricted to Finance_Payroll dataset + salary analytics
-  manager  — all data, but filtered to their own department
+  super_admin — platform owner; manages companies, sees nothing by default
+                (no data access — only company/user management)
+  admin       — company admin; manages users within their own company only
+  hr          — all data + upload within their company
+  payroll     — restricted to Finance_Payroll dataset within their company
+  manager     — all datasets, filtered to their own department
 
-Users are stored in the Supabase `app_users` table.
+Every user belongs to a company (company_id).  All data queries are
+hard-scoped to the logged-in user's company — no cross-company leakage.
+
 Passwords are SHA-256 hashed (no extra dependencies).
 """
 
@@ -16,114 +20,72 @@ import os
 from pathlib import Path
 from typing import Optional
 
-# Compute the .env path ONCE at import time — most reliable approach
-# (avoids any cwd issues; __file__ is always the absolute path of auth.py)
 _AUTH_DIR = Path(__file__).resolve().parent
 _ENV_FILE  = _AUTH_DIR / ".env"
 
 # ── Role definitions ──────────────────────────────────────────────────────────
 
 ROLES: dict[str, dict] = {
+    "super_admin": {
+        "label":          "Platform Admin",
+        "icon":           "🌐",
+        "tabs":           ["admin"],          # only the admin panel
+        "can_see_salary": False,
+        "datasets":       None,
+        "dept_filter":    False,
+    },
     "admin": {
-        "label":           "Administrator",
-        "icon":            "👑",
-        "tabs":            ["chat", "analytics", "upload", "admin"],
-        "can_see_salary":  True,
-        "datasets":        None,   # None = access to all datasets
-        "dept_filter":     False,  # no forced department filter
+        "label":          "Company Administrator",
+        "icon":           "👑",
+        "tabs":           ["chat", "analytics", "upload", "admin"],
+        "can_see_salary": True,
+        "datasets":       None,
+        "dept_filter":    False,
     },
     "hr": {
-        "label":           "HR Manager",
-        "icon":            "🧑‍💼",
-        "tabs":            ["chat", "analytics", "upload"],
-        "can_see_salary":  True,
-        "datasets":        None,
-        "dept_filter":     False,
+        "label":          "HR Manager",
+        "icon":           "🧑‍💼",
+        "tabs":           ["chat", "analytics", "upload"],
+        "can_see_salary": True,
+        "datasets":       None,
+        "dept_filter":    False,
     },
     "payroll": {
-        "label":           "Payroll Department",
-        "icon":            "💰",
-        "tabs":            ["chat", "analytics"],
-        "can_see_salary":  True,
-        "datasets":        ["Finance_Payroll_2024"],  # hard-restricted
-        "dept_filter":     False,
+        "label":          "Payroll Department",
+        "icon":           "💰",
+        "tabs":           ["chat", "analytics"],
+        "can_see_salary": True,
+        "datasets":       ["Finance_Payroll_2024"],
+        "dept_filter":    False,
     },
     "manager": {
-        "label":           "Department Manager",
-        "icon":            "🏢",
-        "tabs":            ["chat", "analytics"],
-        "can_see_salary":  False,  # managers cannot see salary data
-        "datasets":        None,
-        "dept_filter":     True,   # auto-filtered to user's department
+        "label":          "Department Manager",
+        "icon":           "🏢",
+        "tabs":           ["chat", "analytics"],
+        "can_see_salary": False,
+        "datasets":       None,
+        "dept_filter":    True,
     },
 }
-
-# ── Default users (seeded into Supabase on first login) ───────────────────────
-
-_SEED_USERS = [
-    {
-        "username":   "admin",
-        "password":   "admin123",
-        "role":       "admin",
-        "department": None,
-        "full_name":  "System Administrator",
-    },
-    {
-        "username":   "hr_manager",
-        "password":   "hr123",
-        "role":       "hr",
-        "department": None,
-        "full_name":  "HR Manager",
-    },
-    {
-        "username":   "payroll_user",
-        "password":   "payroll123",
-        "role":       "payroll",
-        "department": "Finance",
-        "full_name":  "Payroll Officer",
-    },
-    {
-        "username":   "sales_head",
-        "password":   "sales123",
-        "role":       "manager",
-        "department": "Sales",
-        "full_name":  "Sales Department Head",
-    },
-    {
-        "username":   "tech_head",
-        "password":   "tech123",
-        "role":       "manager",
-        "department": "Research & Development",
-        "full_name":  "Tech Department Head",
-    },
-]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _hash(password: str) -> str:
-    """SHA-256 hash — deterministic, no extra deps."""
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
 def get_auth_client():
     """
-    Create a raw Supabase client for authentication.
-    Independent of SQLEngine — no Gemini required.
-    Uses an absolute path to .env so it works regardless of Streamlit's cwd.
-    Falls back to st.secrets for Render / Streamlit Cloud.
-    Returns the Supabase client, or None on failure.
+    Supabase client for auth — independent of SQLEngine, no Gemini needed.
+    Loads .env by absolute path so it works regardless of Streamlit's cwd.
     """
-    # Load .env using the module-level constant — computed at import time, never
-    # depends on cwd.  override=True ensures we replace any stale empty strings
-    # that may have been placed in the environment before dotenv ran.
     try:
         from dotenv import load_dotenv
         load_dotenv(dotenv_path=_ENV_FILE, override=True)
     except Exception:
         pass
 
-    # Manual fallback: parse .env ourselves if dotenv didn't populate the vars
     if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_KEY"):
         try:
             with open(_ENV_FILE, "r", encoding="utf-8") as _f:
@@ -138,7 +100,6 @@ def get_auth_client():
     url = os.environ.get("SUPABASE_URL", "").strip()
     key = os.environ.get("SUPABASE_KEY", "").strip()
 
-    # Streamlit secrets fallback (Render / Streamlit Cloud)
     if not url or not key:
         try:
             import streamlit as st
@@ -161,16 +122,15 @@ def get_auth_client():
 
 
 def role_info(role: str) -> dict:
-    """Return the role config dict, defaulting to 'hr' if unknown."""
     return ROLES.get(role, ROLES["hr"])
 
 
-# ── Core auth functions ───────────────────────────────────────────────────────
+# ── Core auth ─────────────────────────────────────────────────────────────────
 
 def authenticate(sb, username: str, password: str) -> Optional[dict]:
     """
-    Verify credentials against the app_users table.
-    Returns the full user row dict on success, None on failure.
+    Verify credentials.  Returns full user row (including company_id) on
+    success, None on failure.
     """
     try:
         hashed = _hash(password)
@@ -183,7 +143,6 @@ def authenticate(sb, username: str, password: str) -> Optional[dict]:
         )
         if rows.data:
             user = rows.data[0]
-            # Best-effort: stamp last_login (ignore errors)
             try:
                 from datetime import datetime, timezone
                 sb.table("app_users").update(
@@ -197,61 +156,127 @@ def authenticate(sb, username: str, password: str) -> Optional[dict]:
     return None
 
 
-def seed_users(sb) -> int:
+def ensure_super_admin(sb) -> bool:
     """
-    Insert the default demo users if the table is empty.
-    Safe to call on every startup — skips if users already exist.
-    Returns the number of users inserted.
+    Create the platform super_admin account if it doesn't exist.
+    Credentials come from SUPER_ADMIN_USER / SUPER_ADMIN_PASS env vars.
+    Falls back to 'superadmin' / a random hex token printed to the console.
+    Returns True if the account already existed or was just created.
     """
     try:
-        existing = sb.table("app_users").select("id").limit(1).execute()
-        if existing.data:   # at least one user already exists
-            return 0
-        inserted = 0
-        for u in _SEED_USERS:
-            try:
-                sb.table("app_users").insert({
-                    "username":      u["username"],
-                    "password_hash": _hash(u["password"]),
-                    "role":          u["role"],
-                    "department":    u.get("department"),
-                    "full_name":     u["full_name"],
-                }).execute()
-                inserted += 1
-            except Exception as e:
-                print(f"[Auth] seed: could not insert {u['username']}: {e}")
-        return inserted
-    except Exception as e:
-        print(f"[Auth] seed_users error: {e}")
-        return 0
-
-
-# ── User management (admin only) ──────────────────────────────────────────────
-
-def get_all_users(sb) -> list:
-    try:
-        return (
+        existing = (
             sb.table("app_users")
-            .select("id, username, role, department, full_name, last_login")
-            .order("id")
+            .select("id")
+            .eq("role", "super_admin")
+            .limit(1)
             .execute()
-            .data
-            or []
         )
+        if existing.data:
+            return True
+
+        username = os.environ.get("SUPER_ADMIN_USER", "superadmin").strip()
+        password = os.environ.get("SUPER_ADMIN_PASS", "").strip()
+        if not password:
+            import secrets
+            password = secrets.token_hex(12)
+            print(f"\n[Auth] *** SUPER ADMIN CREATED ***")
+            print(f"[Auth]   username : {username}")
+            print(f"[Auth]   password : {password}")
+            print(f"[Auth] Save these — they will NOT be shown again.\n")
+
+        sb.table("app_users").insert({
+            "username":      username,
+            "password_hash": _hash(password),
+            "role":          "super_admin",
+            "full_name":     "Platform Administrator",
+            "company_id":    None,
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"[Auth] ensure_super_admin error: {e}")
+        return False
+
+
+# ── Company management (super_admin only) ─────────────────────────────────────
+
+def get_all_companies(sb) -> list:
+    try:
+        res = sb.rpc("run_employee_query", {
+            "query_sql": "SELECT id, name, slug, created_at FROM companies ORDER BY id"
+        }).execute()
+        return res.data or []
+    except Exception as e:
+        print(f"[Auth] get_all_companies error: {e}")
+        return []
+
+
+def create_company(sb, name: str, slug: str) -> tuple[bool, str, Optional[int]]:
+    """Returns (success, error_message, new_company_id)."""
+    if not name.strip() or not slug.strip():
+        return False, "Name and slug cannot be empty", None
+    safe_name = name.strip().replace("'", "''")
+    safe_slug = slug.strip().lower().replace(" ", "-").replace("'", "")
+    try:
+        sb.rpc("run_employee_write", {"query_sql":
+            f"INSERT INTO companies (name, slug) VALUES ('{safe_name}', '{safe_slug}')"
+        }).execute()
+        res = sb.rpc("run_employee_query", {"query_sql":
+            f"SELECT id FROM companies WHERE slug = '{safe_slug}' LIMIT 1"
+        }).execute()
+        company_id = res.data[0]["id"] if res.data else None
+        return True, "", company_id
+    except Exception as e:
+        msg = str(e)
+        if "unique" in msg.lower() or "duplicate" in msg.lower():
+            return False, f"Company slug '{safe_slug}' already exists", None
+        return False, msg, None
+
+
+def delete_company(sb, company_id: int) -> tuple[bool, str]:
+    """Delete a company and all its users (employees data is NOT deleted)."""
+    try:
+        sb.rpc("run_employee_write", {"query_sql":
+            f"DELETE FROM app_users WHERE company_id = {int(company_id)}"
+        }).execute()
+        sb.rpc("run_employee_write", {"query_sql":
+            f"DELETE FROM companies WHERE id = {int(company_id)}"
+        }).execute()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+# ── User management ───────────────────────────────────────────────────────────
+
+def get_all_users(sb, company_id: Optional[int] = None) -> list:
+    """
+    super_admin passes company_id to scope to one company.
+    company admin passes their own company_id (enforced by caller).
+    """
+    try:
+        q = sb.table("app_users").select(
+            "id, username, role, department, full_name, last_login, company_id"
+        )
+        if company_id is not None:
+            q = q.eq("company_id", company_id)
+        return q.order("id").execute().data or []
     except Exception as e:
         print(f"[Auth] get_all_users error: {e}")
         return []
 
 
 def create_user(sb, username: str, password: str, role: str,
-                department: Optional[str], full_name: str) -> tuple[bool, str]:
+                department: Optional[str], full_name: str,
+                company_id: int) -> tuple[bool, str]:
     """Returns (success, error_message)."""
     if not username.strip():
         return False, "Username cannot be empty"
-    if len(password) < 4:
-        return False, "Password must be at least 4 characters"
+    if len(password) < 6:
+        return False, "Password must be at least 6 characters"
     if role not in ROLES:
         return False, f"Invalid role '{role}'"
+    if role == "super_admin":
+        return False, "Cannot create super_admin via this form"
     try:
         sb.table("app_users").insert({
             "username":      username.strip(),
@@ -259,6 +284,7 @@ def create_user(sb, username: str, password: str, role: str,
             "role":          role,
             "department":    department.strip() if department else None,
             "full_name":     full_name.strip(),
+            "company_id":    company_id,
         }).execute()
         return True, ""
     except Exception as e:
@@ -277,12 +303,13 @@ def delete_user(sb, user_id: int) -> bool:
         return False
 
 
-def update_password(sb, user_id: int, new_password: str) -> bool:
+def update_password(sb, user_id: int, new_password: str) -> tuple[bool, str]:
+    if len(new_password) < 6:
+        return False, "Password must be at least 6 characters"
     try:
         sb.table("app_users").update(
             {"password_hash": _hash(new_password)}
         ).eq("id", user_id).execute()
-        return True
+        return True, ""
     except Exception as e:
-        print(f"[Auth] update_password error: {e}")
-        return False
+        return False, str(e)

@@ -264,7 +264,8 @@ NOT like this: "Col Name": "null"
 
     def insert_to_db(self, df: pd.DataFrame, sb_client,
                      mode: str = "add_new",
-                     source_file: str = "upload") -> dict:
+                     source_file: str = "upload",
+                     company_id: int = 1) -> dict:
         """
         Insert the processed DataFrame into the employees table.
         mode:
@@ -334,7 +335,8 @@ NOT like this: "Col Name": "null"
                 sb_client.rpc(
                     "run_employee_write",
                     {"query_sql":
-                        f"UPDATE employees SET source_file = '{safe_name}' "
+                        f"UPDATE employees "
+                        f"SET source_file = '{safe_name}', company_id = {int(company_id)} "
                         f"WHERE id > {max_id_before}"}
                 ).execute()
             except Exception as e:
@@ -350,12 +352,14 @@ NOT like this: "Col Name": "null"
     # ── Full pipeline (convenience) ───────────────────────────────────────────
 
     def run(self, df: pd.DataFrame, sb_client,
-            mode: str = "add_new", source_file: str = "upload") -> dict:
+            mode: str = "add_new", source_file: str = "upload",
+            company_id: int = 1) -> dict:
         """analyze → clean → insert. Returns result dict."""
         mapping  = self.analyze_columns(df)
         clean_df = self.clean_and_transform(df, mapping)
         result   = self.insert_to_db(clean_df, sb_client,
-                                     mode=mode, source_file=source_file)
+                                     mode=mode, source_file=source_file,
+                                     company_id=company_id)
         result["mapping"] = mapping
         result["columns_mapped"] = len(
             [v for v in mapping.get("column_map", {}).values() if v]
