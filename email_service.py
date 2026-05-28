@@ -1,5 +1,5 @@
 """
-Email Service — OTP delivery via Gmail SMTP.
+Email Service — OTP delivery via Outlook / Office 365 SMTP.
 Reads SMTP_EMAIL and SMTP_PASSWORD from environment / .env.
 """
 
@@ -88,12 +88,20 @@ def send_otp_email(to_email: str, otp: str, company_name: str) -> tuple[bool, st
         msg["To"]      = to_email
         msg.attach(MIMEText(html, "html"))
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+        # Outlook / Office 365 — STARTTLS on port 587
+        with smtplib.SMTP("smtp.office365.com", 587, timeout=10) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
             server.login(smtp_email, smtp_pass)
             server.sendmail(smtp_email, to_email, msg.as_string())
         return True, ""
     except smtplib.SMTPAuthenticationError:
-        return False, "Gmail authentication failed — check SMTP_EMAIL and SMTP_PASSWORD (use an App Password, not your Gmail password)"
+        return False, (
+            "Outlook authentication failed — check SMTP_EMAIL and SMTP_PASSWORD. "
+            "If your org uses MFA, ask IT to enable SMTP AUTH for your account, "
+            "or generate an app password in your Microsoft account security settings."
+        )
     except Exception as e:
         return False, str(e)
 
