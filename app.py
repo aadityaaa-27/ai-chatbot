@@ -1244,14 +1244,13 @@ def render_admin_tab(sql: SQLEngine):
             else:
                 ok, err, token = create_invite_token(sb, inv_company.strip(), hours=inv_hours)
                 if ok:
-                    # Build the app URL dynamically
-                    try:
-                        base_url = st.query_params.get("_base_url", "")
-                    except Exception:
-                        base_url = ""
-                    if not base_url:
-                        # Fallback: use the Render URL from env or a placeholder
-                        base_url = os.environ.get("APP_URL", "https://your-app.onrender.com")
+                    # Resolve base URL: Render injects RENDER_EXTERNAL_URL automatically
+                    base_url = (
+                        os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+                        or os.environ.get("APP_URL", "").strip()
+                    )
+                    # Strip trailing slash so the ?invite= param is clean
+                    base_url = base_url.rstrip("/")
                     invite_url = f"{base_url}?invite={token}"
                     st.success(f"Invite link created for **{inv_company.strip()}**!")
                     st.code(invite_url, language=None)
